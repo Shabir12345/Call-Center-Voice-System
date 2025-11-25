@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentFlow Orchestrator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reactflow@11.11.4/dist/style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+            boxShadow: {
+              'glow-indigo': '0 0 20px -5px rgba(99, 102, 241, 0.4)',
+              'glow-emerald': '0 0 20px -5px rgba(16, 185, 129, 0.4)',
+              'glow-amber': '0 0 20px -5px rgba(245, 158, 11, 0.4)',
+              'glow-rose': '0 0 20px -5px rgba(244, 63, 94, 0.4)',
+              'node': '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+              'node-hover': '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        background-color: #f8fafc; /* slate-50 */
+      }
+      
+      /* Custom Scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
+
+      /* React Flow Overrides */
+      .react-flow__node {
+        border-radius: 16px;
+        font-size: 12px;
+      }
+      
+      /* Improved Handle UX - Larger Hit Area */
+      .react-flow__handle {
+        width: 14px;
+        height: 14px;
+        background: #94a3b8;
+        border: 2px solid white;
+        transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275), background-color 0.2s;
+        z-index: 10;
+      }
+      
+      /* Invisible hit-area expansion - Critical for easier connections */
+      .react-flow__handle::after {
+        content: "";
+        position: absolute;
+        top: -15px;
+        left: -15px;
+        right: -15px;
+        bottom: -15px;
+        border-radius: 50%;
+        background: transparent;
+        z-index: -1;
+      }
+
+      .react-flow__handle:hover {
+        transform: scale(1.3);
+        background: #6366f1; /* indigo-500 */
+        box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.2);
+        cursor: crosshair;
+      }
+      
+      /* Connection Line Styling */
+      .react-flow__connection-path {
+        stroke: #6366f1;
+        stroke-width: 2.5;
+        stroke-dasharray: 5;
+        animation: dashdraw 0.5s linear infinite;
+        filter: drop-shadow(0 0 2px rgba(99, 102, 241, 0.5));
+      }
+
+      @keyframes dashdraw {
+        from { stroke-dashoffset: 10; }
+        to { stroke-dashoffset: 0; }
+      }
+
+      .react-flow__controls {
+        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1) !important;
+        border: 1px solid #f1f5f9;
+        border-radius: 12px;
+        overflow: hidden;
+        padding: 4px;
+        background: white;
+      }
+      .react-flow__controls-button {
+        border: none !important;
+        background: transparent !important;
+        border-radius: 6px;
+        transition: background 0.2s;
+      }
+      .react-flow__controls-button:hover {
+        background: #f1f5f9 !important;
+      }
+      .react-flow__attribution {
+        display: none;
+      }
+
+      /* Animations */
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .animate-fadeIn {
+        animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      
+      @keyframes slideIn {
+        from { opacity: 0; transform: translateX(10px); }
+        to { opacity: 1; transform: translateX(0); }
+      }
+      .animate-slideIn {
+        animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+    </style>
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://aistudiocdn.com/react@^19.2.0",
+        "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+        "react/": "https://aistudiocdn.com/react@^19.2.0/",
+        "reactflow": "https://aistudiocdn.com/reactflow@^11.11.4",
+        "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
+        "reactflow/": "https://aistudiocdn.com/reactflow@^11.11.4/",
+        "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+        "dagre": "https://esm.sh/dagre@0.8.5"
+      }
+    }
+    </script>
+  <link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

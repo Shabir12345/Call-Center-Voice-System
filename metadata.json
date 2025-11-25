@@ -1,0 +1,7 @@
+{
+  "name": "AgentFlow Orchestrator",
+  "description": "A visual workflow editor for designing multi-agent voice systems using React Flow.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
