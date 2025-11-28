@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { NodeType } from '../types';
-import { BrainCircuit, Headset, Globe, Code2, FileJson, Variable, Plus, StickyNote, Box, GripVertical, Network, MessageSquare, Database, Split } from 'lucide-react';
+import { BrainCircuit, Headset, Globe, Code2, FileJson, Variable, Plus, StickyNote, Box, GripVertical, Network, MessageSquare, Database, Split, BookOpen, User, Calendar } from 'lucide-react';
 
 const Sidebar: React.FC = () => {
   const [userContext, setUserContext] = useState([
@@ -136,6 +136,29 @@ const Sidebar: React.FC = () => {
                     color="bg-blue-50 text-blue-600"
                     label="Mock Data"
                     desc="Simulate responses"
+                />
+                <DraggableCard 
+                    type={NodeType.INTEGRATION}
+                    subType="calendar" 
+                    icon={Calendar} 
+                    color="bg-green-50 text-green-600"
+                    label="Calendar"
+                    desc="Google, Outlook, Apple"
+                    badge="New"
+                />
+                <DraggableCard 
+                    type={NodeType.KNOWLEDGE_BASE}
+                    icon={BookOpen} 
+                    color="bg-purple-50 text-purple-600"
+                    label="Knowledge Base"
+                    desc="Searchable articles & docs"
+                />
+                <DraggableCard 
+                    type={NodeType.CUSTOMER_PROFILE}
+                    icon={User} 
+                    color="bg-cyan-50 text-cyan-600"
+                    label="Customer Profile"
+                    desc="CRM integration & data"
                 />
             </div>
         </div>

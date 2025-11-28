@@ -34,6 +34,10 @@ export class GeminiClient {
   private stream: MediaStream | null = null;
   private processor: ScriptProcessorNode | null = null;
   private inputSource: MediaStreamAudioSourceNode | null = null;
+  private isSessionOpen: boolean = false;
+  private sessionOpenPromise: Promise<void> | null = null;
+  private sessionOpenResolver: (() => void) | null = null;
+  private isDisconnecting: boolean = false;
   
   public onAudioData: ((audioData: ArrayBuffer) => void) | null = null;
   // Updated signature: returns Promise with results to send back to model
@@ -70,28 +74,70 @@ export class GeminiClient {
       config.tools = [{ functionDeclarations: this.config.tools }];
     }
 
+    // Create a promise that resolves when the session is open
+    this.sessionOpenPromise = new Promise((resolve) => {
+      this.sessionOpenResolver = resolve;
+    });
+    this.isSessionOpen = false;
+
     try {
         this.session = await this.client.live.connect({
           model: 'gemini-2.5-flash-native-audio-preview-09-2025',
           callbacks: {
             onopen: () => {
               console.log('Gemini Live Connected');
+              // Log session object structure for debugging
+              if (this.session) {
+                console.log('Session object methods:', Object.keys(this.session));
+                console.log('Session object:', this.session);
+              }
+              this.isSessionOpen = true;
+              if (this.sessionOpenResolver) {
+                this.sessionOpenResolver();
+                this.sessionOpenResolver = null;
+              }
             },
             onmessage: (message: LiveServerMessage) => {
               this.handleMessage(message);
             },
-            onclose: () => {
+            onclose: (event) => {
               console.log('Gemini Live Closed');
+              console.log('Close event:', event);
+              this.isSessionOpen = false;
+              this.isDisconnecting = true;
+              // Log close reason if available
+              if (event) {
+                console.log('Close event details:', {
+                  code: event.code,
+                  reason: event.reason,
+                  wasClean: event.wasClean
+                });
+              } else {
+                console.log('Close event is null/undefined');
+              }
+              // Log stack trace to see what triggered the close
+              console.trace('Connection closed from:');
               if (this.onDisconnect) this.onDisconnect();
             },
             onerror: (err) => {
               console.error('Gemini Live Error:', err);
+              this.isSessionOpen = false;
+              // Log more details about the error
+              if (err instanceof Error) {
+                console.error('Error details:', err.message, err.stack);
+              } else {
+                console.error('Error object:', JSON.stringify(err, null, 2));
+              }
             }
           },
           config: config
         });
+        
+        // Wait for the session to be fully open before returning
+        await this.sessionOpenPromise;
     } catch (err) {
         console.error("Gemini Connect Error:", err);
+        this.isSessionOpen = false;
         throw err;
     }
   }
@@ -189,49 +235,115 @@ export class GeminiClient {
   // --- Audio Input Handling ---
 
   async startRecording() {
+    if (!this.session) {
+      console.error('Cannot start recording: Session not connected');
+      throw new Error('Session not connected');
+    }
+    
+    // Wait for session to be open if not already
+    if (!this.isSessionOpen && this.sessionOpenPromise) {
+      console.log('Waiting for session to be fully open...');
+      await this.sessionOpenPromise;
+    }
+    
+    if (!this.isSessionOpen) {
+      console.error('Cannot start recording: Session not open');
+      throw new Error('Session not open');
+    }
+
+    // Add a small delay to ensure session is fully ready
+    console.log('Session is open, waiting 100ms before starting audio...');
+    await new Promise(resolve => setTimeout(resolve, 100));
+
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     // Note: We try to ask for 16000, but browser might reject or ignore. We must check actual rate.
     this.audioContext = new AudioContextClass({ sampleRate: 16000 }); 
     
-    // Get stream
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
-    
-    await this.audioContext.resume();
-
-    this.inputSource = this.audioContext.createMediaStreamSource(this.stream);
-    
-    // Use ScriptProcessor as per Google GenAI guidelines example
-    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-    
-    const sourceSampleRate = this.audioContext.sampleRate;
-    const targetSampleRate = 16000;
-
-    this.processor.onaudioprocess = (e) => {
-      const inputData = e.inputBuffer.getChannelData(0);
+    try {
+      // Get stream
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
       
-      // Robust Downsampling: Ensure we always send 16kHz to Gemini
-      let finalData = inputData;
-      if (sourceSampleRate !== targetSampleRate) {
-          finalData = this.downsampleBuffer(inputData, sourceSampleRate, targetSampleRate);
-      }
+      await this.audioContext.resume();
 
-      // Convert Float32 to Int16 PCM
-      const pcmData = this.floatTo16BitPCM(finalData);
-      const base64Audio = this.arrayBufferToBase64(pcmData);
+      this.inputSource = this.audioContext.createMediaStreamSource(this.stream);
       
-      // Check session validity inside the loop to avoid stale closure issues or race conditions
-      if (this.session) {
-        this.session.sendRealtimeInput({ 
-            media: {
+      // Use ScriptProcessor as per Google GenAI guidelines example
+      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+      
+      const sourceSampleRate = this.audioContext.sampleRate;
+      const targetSampleRate = 16000;
+
+      this.processor.onaudioprocess = (e) => {
+        // Check session validity first
+        if (!this.session || !this.isSessionOpen || this.isDisconnecting) {
+          if (this.isDisconnecting) {
+            console.warn('Session is disconnecting, skipping audio chunk');
+          } else {
+            console.warn('Session not ready, skipping audio chunk');
+          }
+          return;
+        }
+
+        const inputData = e.inputBuffer.getChannelData(0);
+        
+        // Robust Downsampling: Ensure we always send 16kHz to Gemini
+        let finalData = inputData;
+        if (sourceSampleRate !== targetSampleRate) {
+            finalData = this.downsampleBuffer(inputData, sourceSampleRate, targetSampleRate);
+        }
+
+        // Convert Float32 to Int16 PCM
+        const pcmData = this.floatTo16BitPCM(finalData);
+        const base64Audio = this.arrayBufferToBase64(pcmData);
+        
+        try {
+          // Try the send method first (similar to sendText)
+          if (typeof this.session.send === 'function') {
+            this.session.send([{
+              media: {
                 mimeType: "audio/pcm;rate=16000",
                 data: base64Audio
+              }
+            }], false); // false = not final chunk
+          } else if (typeof this.session.sendRealtimeInput === 'function') {
+            // Fallback to sendRealtimeInput if send doesn't work
+            this.session.sendRealtimeInput({ 
+                media: {
+                    mimeType: "audio/pcm;rate=16000",
+                    data: base64Audio
+                }
+            });
+          } else {
+            console.error('No valid send method found on session. Available methods:', Object.keys(this.session));
+          }
+        } catch (error) {
+          console.error('Error sending audio to Gemini:', error);
+          console.error('Error details:', {
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            sessionState: {
+              hasSession: !!this.session,
+              isOpen: this.isSessionOpen,
+              sessionType: typeof this.session
             }
-        });
-      }
-    };
+          });
+          // Don't disconnect on error, just log it
+        }
+      };
 
-    this.inputSource.connect(this.processor);
-    this.processor.connect(this.audioContext.destination);
+      this.inputSource.connect(this.processor);
+      // Create a dummy destination to avoid feedback - don't connect to actual speakers
+      // ScriptProcessorNode requires a destination, so we use a GainNode with 0 gain
+      const dummyGain = this.audioContext.createGain();
+      dummyGain.gain.value = 0; // Mute the output
+      this.processor.connect(dummyGain);
+      dummyGain.connect(this.audioContext.destination);
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      // Clean up on error
+      this.stopRecording();
+      throw error;
+    }
   }
 
   stopRecording() {
@@ -255,7 +367,9 @@ export class GeminiClient {
   }
 
   disconnect() {
+    this.isDisconnecting = true;
     this.stopRecording();
+    this.isSessionOpen = false;
     if (this.session) {
         try {
             this.session.close();
@@ -264,6 +378,10 @@ export class GeminiClient {
         }
         this.session = null;
     }
+    // Reset session open promise
+    this.sessionOpenPromise = null;
+    this.sessionOpenResolver = null;
+    this.isDisconnecting = false;
   }
 
   // --- Helpers ---

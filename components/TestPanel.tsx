@@ -26,7 +26,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Phone, Mic, Square, Play, Pause, Volume2, Activity, MessageSquare, AlertTriangle, Clock, Download, Coins, Zap, CheckCircle2, Target, ShieldAlert, ChevronDown, ChevronRight, ArrowRightLeft, Network, Bot, User } from 'lucide-react';
+import { Phone, Mic, Square, Play, Pause, Volume2, Activity, MessageSquare, AlertTriangle, Clock, Download, Coins, Zap, CheckCircle2, Target, ShieldAlert, ChevronDown, ChevronRight, ArrowRightLeft, Network, Bot, User, Type } from 'lucide-react';
 import { GeminiClient, ToolCallResponse } from '../utils/geminiClient';
 import { AppNode, Edge, NodeType, RouterNodeData, SubAgentNodeData, IntegrationNodeData, DepartmentNodeData, CommunicationConfig, AgentMessage, ConversationContext } from '../types';
 import { GoogleGenAI, Chat, GenerateContentResponse, Part } from "@google/genai";
@@ -34,6 +34,23 @@ import { validateSubAgentResponse, normalizeSubAgentResponse, transformResponseF
 import { CommunicationManager } from '../utils/agentCommunication';
 import { CommunicationMonitor } from '../utils/communicationMonitor';
 import { createMessage } from '../utils/communicationProtocols';
+import { PerformanceMonitor } from '../utils/performanceMonitor';
+import { HealthChecker } from '../utils/healthChecker';
+import { AnalyticsManager } from '../utils/analytics';
+import { Tracer } from '../utils/tracing';
+import { ReliabilityMetricsTracker } from '../utils/reliabilityMetrics';
+import { CentralLogger } from '../utils/logger';
+import { StateManager } from '../utils/stateManager';
+import { SessionManager } from '../utils/sessionManager';
+import { AlertManager } from '../utils/alerting';
+import { DashboardProvider } from '../utils/dashboard';
+import ObservabilityPanel from './ObservabilityPanel';
+import SystemStatusPanel from './SystemStatusPanel';
+import { TestPanelAdapter } from '../utils/testPanelAdapter';
+import { ConfigValidator } from '../utils/configValidator';
+import { initializeSecurity } from '../utils/securityHeaders';
+import { globalAuditLogger } from '../utils/auditLogger';
+import { AnomalyDetector } from '../utils/anomalyDetection';
 
 interface TestPanelProps {
   nodes: AppNode[];
@@ -114,6 +131,9 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
       successfulResolutions: 0,
       isSessionResolved: false
   });
+  // Simple architecture stats so users can SEE the multi-agent system
+  const departmentCount = nodes.filter(n => n.type === NodeType.DEPARTMENT).length;
+  const toolCount = nodes.filter(n => n.type === NodeType.SUB_AGENT).length;
   
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
@@ -140,8 +160,91 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
   const commManagerRef = useRef<CommunicationManager | null>(null);
   const commMonitorRef = useRef<CommunicationMonitor | null>(null);
   
-  // Initialize communication system
+  // Observability Tools
+  const loggerRef = useRef<CentralLogger | null>(null);
+  const performanceMonitorRef = useRef<PerformanceMonitor | null>(null);
+  const healthCheckerRef = useRef<HealthChecker | null>(null);
+  const analyticsManagerRef = useRef<AnalyticsManager | null>(null);
+  const tracerRef = useRef<Tracer | null>(null);
+  const reliabilityTrackerRef = useRef<ReliabilityMetricsTracker | null>(null);
+  const anomalyDetectorRef = useRef<AnomalyDetector | null>(null);
+  const stateManagerRef = useRef<StateManager | null>(null);
+  const sessionManagerRef = useRef<SessionManager | null>(null);
+  const alertManagerRef = useRef<AlertManager | null>(null);
+  const dashboardProviderRef = useRef<DashboardProvider | null>(null);
+  const [showObservability, setShowObservability] = useState(false);
+  const [simulationMode, setSimulationMode] = useState<'voice' | 'text'>('voice');
+  const [selectedAppVariant, setSelectedAppVariant] = useState<string>('');
+  const [textInput, setTextInput] = useState('');
+  const [textSessionId] = useState(() => `text_session_${Date.now()}`);
+  const testPanelAdapterRef = useRef<TestPanelAdapter | null>(null);
+  
+  // Initialize TestPanelAdapter for text mode
   useEffect(() => {
+    if (!testPanelAdapterRef.current) {
+      testPanelAdapterRef.current = new TestPanelAdapter();
+    }
+    
+    // Initialize adapter with current nodes when nodes change
+    if (nodes.length > 0 && selectedAppVariant) {
+      testPanelAdapterRef.current.initializeFromNodes(nodes, selectedAppVariant).catch(err => {
+        console.error('Failed to initialize TestPanelAdapter:', err);
+        addLog('system', `❌ Failed to initialize text mode: ${err.message}`);
+      });
+    } else if (nodes.length > 0 && simulationMode === 'text') {
+      // Initialize without app variant
+      testPanelAdapterRef.current.initializeFromNodes(nodes).catch(err => {
+        console.error('Failed to initialize TestPanelAdapter:', err);
+        addLog('system', `❌ Failed to initialize text mode: ${err.message}`);
+      });
+    }
+  }, [nodes, selectedAppVariant, simulationMode]);
+
+  // Initialize communication system and observability tools
+  useEffect(() => {
+    // Initialize logger
+    if (!loggerRef.current) {
+      loggerRef.current = new CentralLogger('info');
+    }
+    
+    // Initialize state manager
+    if (!stateManagerRef.current) {
+      stateManagerRef.current = new StateManager();
+    }
+    
+    // Initialize performance monitor
+    if (!performanceMonitorRef.current && loggerRef.current) {
+      performanceMonitorRef.current = new PerformanceMonitor(loggerRef.current);
+    }
+    
+    // Initialize analytics manager
+    if (!analyticsManagerRef.current && loggerRef.current && performanceMonitorRef.current) {
+      analyticsManagerRef.current = new AnalyticsManager(loggerRef.current, performanceMonitorRef.current);
+    }
+    
+    // Initialize reliability tracker
+    if (!reliabilityTrackerRef.current && loggerRef.current) {
+      reliabilityTrackerRef.current = new ReliabilityMetricsTracker(loggerRef.current);
+    }
+    
+    // Initialize anomaly detector
+    if (!anomalyDetectorRef.current && 
+        loggerRef.current && 
+        performanceMonitorRef.current && 
+        analyticsManagerRef.current) {
+      anomalyDetectorRef.current = new AnomalyDetector(
+        performanceMonitorRef.current,
+        analyticsManagerRef.current,
+        loggerRef.current,
+        { enabled: true, checkInterval: 60000 }
+      );
+    }
+    
+    // Initialize tracer
+    if (!tracerRef.current && loggerRef.current) {
+      tracerRef.current = new Tracer(loggerRef.current);
+    }
+    
     if (!commManagerRef.current) {
       commManagerRef.current = new CommunicationManager({
         enabled: true,
@@ -158,7 +261,64 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
       // Subscribe to communication events for monitoring
       commManagerRef.current.onEvent('*', (event) => {
         commMonitorRef.current?.log(event);
+        // Also track in analytics
+        analyticsManagerRef.current?.trackEvent('communication', {
+          type: event.type,
+          from: event.from,
+          to: event.to
+        });
       });
+    }
+    
+    // Initialize health checker
+    if (!healthCheckerRef.current && 
+        commManagerRef.current && 
+        stateManagerRef.current && 
+        loggerRef.current && 
+        performanceMonitorRef.current) {
+      healthCheckerRef.current = new HealthChecker(
+        commManagerRef.current,
+        stateManagerRef.current,
+        loggerRef.current,
+        performanceMonitorRef.current
+      );
+    }
+
+    // Initialize session manager
+    if (!sessionManagerRef.current && stateManagerRef.current && loggerRef.current) {
+      sessionManagerRef.current = new SessionManager(stateManagerRef.current, loggerRef.current);
+    }
+
+    // Initialize alert manager
+    if (!alertManagerRef.current && 
+        loggerRef.current && 
+        performanceMonitorRef.current && 
+        healthCheckerRef.current) {
+      alertManagerRef.current = new AlertManager(
+        loggerRef.current,
+        performanceMonitorRef.current,
+        healthCheckerRef.current
+      );
+    }
+
+    // Initialize dashboard provider (unified interface for all observability data)
+    if (!dashboardProviderRef.current && 
+        performanceMonitorRef.current && 
+        healthCheckerRef.current && 
+        analyticsManagerRef.current && 
+        sessionManagerRef.current && 
+        alertManagerRef.current && 
+        loggerRef.current) {
+      dashboardProviderRef.current = new DashboardProvider(
+        performanceMonitorRef.current,
+        healthCheckerRef.current,
+        analyticsManagerRef.current,
+        sessionManagerRef.current,
+        alertManagerRef.current,
+        loggerRef.current,
+        reliabilityTrackerRef.current || undefined,
+        anomalyDetectorRef.current || undefined
+      );
     }
 
     return () => {
@@ -170,9 +330,29 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
   }, []);
 
   useEffect(() => {
+      // Validate configuration at startup
+      const validator = new ConfigValidator();
+      const isValid = validator.validateStartup();
+      
+      if (!isValid) {
+          console.error('❌ Configuration validation failed - some features may not work');
+      }
+
+      // Check API key (will be removed once backend is implemented)
       if (!process.env.API_KEY) {
           setApiKeyError(true);
       }
+
+      // Initialize security
+      initializeSecurity();
+
+      // Initialize audit logging
+      globalAuditLogger.log({
+        eventType: 'session_creation',
+        action: 'application_startup',
+        result: 'success',
+        details: { timestamp: Date.now() }
+      });
   }, []);
 
   useEffect(() => {
@@ -399,6 +579,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
 
           if (integrationNode) {
               const intData = integrationNode.data as IntegrationNodeData;
+              
+              // Create trace span for integration execution
+              const integrationTraceContext = tracerRef.current?.startSpan(
+                  `integration:${intData.integrationType}`,
+                  undefined,
+                  { integrationType: intData.integrationType, url: intData.url || 'N/A', toolId: toolNodeId }
+              );
+              
               addLog('debug', `Hitting Integration: ${intData.label}`, { 
                   type: intData.integrationType, 
                   url: intData.url,
@@ -427,11 +615,25 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
               };
 
               // Execute with timeout
-              const result = await withTimeout(
-                  executeIntegration(),
-                  DEFAULT_COMM_CONFIG.timeout.toolExecution,
-                  `Integration execution timeout after ${DEFAULT_COMM_CONFIG.timeout.toolExecution}ms`
-              );
+              let result;
+              try {
+                  result = await withTimeout(
+                      executeIntegration(),
+                      DEFAULT_COMM_CONFIG.timeout.toolExecution,
+                      `Integration execution timeout after ${DEFAULT_COMM_CONFIG.timeout.toolExecution}ms`
+                  );
+              } finally {
+                  // End integration trace
+                  if (integrationTraceContext) {
+                      const integrationDuration = Date.now() - startTime;
+                      tracerRef.current?.endSpan(integrationTraceContext.spanId, {
+                          success: !result?.error,
+                          duration: integrationDuration,
+                          error: result?.error,
+                          errorCode: result?.errorCode
+                      });
+                  }
+              }
 
               const duration = Date.now() - startTime;
               const normalized = normalizeSubAgentResponse(result, 'direct', { duration });
@@ -721,6 +923,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
       }
       
       const data = depNode.data as DepartmentNodeData;
+      
+      // Create trace span for sub-agent loop
+      const subAgentTraceContext = tracerRef.current?.startSpan(
+          `sub_agent_loop:${data.agentName || departmentNodeId}`,
+          undefined,
+          { departmentId: departmentNodeId, departmentName: data.agentName, query: initialQuery.substring(0, 100) }
+      );
+      
       addLog('system', `🔵 Consulting ${data.agentName}...`);
       addLog('debug', `Sub-Agent Request`, { 
           departmentId: departmentNodeId,
@@ -799,8 +1009,10 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
           // Wrap the entire operation in a timeout
           const executeLoop = async (): Promise<string> => {
               // Send the query to start the thinking process
-              // Fix: Use proper Part format with parts array for Content Union
-              let result: GenerateContentResponse = await chat.sendMessage([{ parts: [{ text: `Query: ${initialQuery}` }] }]);
+              // Use proper SendMessageParameters format with message property
+              let result: GenerateContentResponse = await chat.sendMessage({ 
+                  message: [{ text: `Query: ${initialQuery}` }] 
+              });
               
               let calls = result.functionCalls;
               let maxTurns = 5; // Increased from 3 to allow more complex workflows
@@ -899,7 +1111,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                   }
                   
                   // Send the tool responses back to the Department Agent
-                  result = await chat.sendMessage(parts);
+                  result = await chat.sendMessage({ message: parts });
                   calls = result.functionCalls;
               }
               
@@ -909,8 +1121,6 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
               // Try to get text from result
               if (result.text) {
                   finalAnswer = result.text;
-              } else if (result.response?.text) {
-                  finalAnswer = result.response.text;
               } else if (result.candidates?.[0]?.content?.parts?.[0]?.text) {
                   finalAnswer = result.candidates[0].content.parts[0].text;
               }
@@ -1006,6 +1216,17 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
               
               if (normalized.success) {
                   const instructions = normalized.data?.instructions || finalAnswer || '';
+                  
+                  // End sub-agent trace
+                  if (subAgentTraceContext) {
+                      tracerRef.current?.endSpan(subAgentTraceContext.spanId, {
+                          success: true,
+                          duration,
+                          turnCount: turns,
+                          hasResponse: true
+                      });
+                  }
+                  
                   addLog('system', `🔵 ${data.agentName} responded (${duration}ms)`, {
                       preview: instructions.substring(0, 100)
                   });
@@ -1013,6 +1234,17 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                   return instructions;
               } else {
                   const errorMsg = normalized.error || 'Sub-agent returned invalid response';
+                  
+                  // End sub-agent trace with error
+                  if (subAgentTraceContext) {
+                      tracerRef.current?.endSpan(subAgentTraceContext.spanId, {
+                          success: false,
+                          duration,
+                          error: errorMsg,
+                          errorCode: normalized.errorCode
+                      });
+                  }
+                  
                   addLog('system', `❌ ${data.agentName} Error: ${errorMsg}`);
                   onSetNodeError(departmentNodeId, errorMsg);
                   return `Error: ${errorMsg}. Please try again or contact support.`;
@@ -1076,6 +1308,16 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
           // Return user-friendly error message
           if (errorCode === 'TIMEOUT') {
               return `The ${data.agentName} department took too long to respond. Please try again with a simpler request.`;
+          }
+          
+          // End sub-agent trace with error
+          if (subAgentTraceContext) {
+              tracerRef.current?.endSpan(subAgentTraceContext.spanId, {
+                  success: false,
+                  duration,
+                  error: errorMsg,
+                  errorCode
+              });
           }
           
           return `I encountered an error while processing your request with ${data.agentName}. Error: ${errorMsg}. Please try again.`;
@@ -1147,10 +1389,24 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
     client.onToolCall = async (toolCalls): Promise<ToolCallResponse[]> => {
         const responses: ToolCallResponse[] = [];
         
+        // Create trace for tool call batch
+        const toolCallTraceContext = tracerRef.current?.startSpan(
+            'master_agent_tool_calls',
+            undefined,
+            { toolCount: toolCalls.length, agentId: agentNodeId }
+        );
+        
         for (const tc of toolCalls) {
             const toolName = tc.name;
             const args = tc.args || {};
             const startTime = Date.now();
+
+            // Create trace span for individual tool call
+            const toolSpanContext = tracerRef.current?.startSpan(
+                `tool_call:${toolName}`,
+                toolCallTraceContext,
+                { toolName, callId: tc.id, args: JSON.stringify(args).substring(0, 100) }
+            );
 
             addLog('debug', `Master Agent Tool Call`, {
                 toolName,
@@ -1193,7 +1449,15 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                 if (targetNode.type === NodeType.DEPARTMENT) {
                     try {
                         const query = args.query || "Provide status/instructions.";
-                        addLog('system', `🔵 Consulting ${(targetNode.data as DepartmentNodeData).agentName}...`);
+                        const departmentName = (targetNode.data as DepartmentNodeData).agentName;
+                        
+                        // Add trace tag for department name
+                        if (toolSpanContext) {
+                            tracerRef.current?.addSpanTag(toolSpanContext.spanId, 'department', departmentName);
+                            tracerRef.current?.addSpanTag(toolSpanContext.spanId, 'service', 'department_consultation');
+                        }
+                        
+                        addLog('system', `🔵 Consulting ${departmentName}...`);
                         
                         // Execute the sub-agent loop
                         const subAgentResponse = await runSubAgentLoop(targetNode.id, query as string);
@@ -1206,6 +1470,15 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                         );
                         
                         const transformed = transformResponseForMaster(normalized);
+                        
+                        // End tool span
+                        if (toolSpanContext) {
+                            tracerRef.current?.endSpan(toolSpanContext.spanId, {
+                                success: normalized.success,
+                                duration: Date.now() - startTime,
+                                hasResponse: !!subAgentResponse
+                            });
+                        }
                         
                         addLog('debug', 'Department Response', {
                             toolName,
@@ -1223,6 +1496,16 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                         continue;
                     } catch (error: any) {
                         const errorMsg = error.message || 'Department consultation failed';
+                        
+                        // End tool span with error
+                        if (toolSpanContext) {
+                            tracerRef.current?.endSpan(toolSpanContext.spanId, {
+                                success: false,
+                                error: errorMsg,
+                                errorCode: 'DEPARTMENT_ERROR'
+                            });
+                        }
+                        
                         addLog('system', `❌ Department Error: ${errorMsg}`);
                         addLog('debug', 'Department Error Details', {
                             toolName,
@@ -1246,6 +1529,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                 // Handle Direct Tools (Master -> Tool Agent) - Direct execution
                 if (targetNode.type === NodeType.SUB_AGENT) {
                     try {
+                        const toolData = targetNode.data as SubAgentNodeData;
+                        
+                        // Add trace tags
+                        if (toolSpanContext) {
+                            tracerRef.current?.addSpanTag(toolSpanContext.spanId, 'service', toolData.specialty || toolData.agentName || 'tool');
+                            tracerRef.current?.addSpanTag(toolSpanContext.spanId, 'toolId', targetNode.id);
+                        }
+                        
                         onSetActiveNodes([agentNodeId, targetNode.id]);
                         animateEdges([{ source: agentNodeId, target: targetNode.id }]);
                         addLog('system', `Executing ${toolName}...`);
@@ -1266,6 +1557,15 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                         
                         const transformed = transformResponseForMaster(normalized);
                         
+                        // End tool span
+                        if (toolSpanContext) {
+                            tracerRef.current?.endSpan(toolSpanContext.spanId, {
+                                success: normalized.success,
+                                duration: Date.now() - startTime,
+                                isGoal: toolData.isGoal || false
+                            });
+                        }
+                        
                         addLog('debug', `Direct Tool Result`, {
                             toolName,
                             resultData,
@@ -1276,7 +1576,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                         });
 
                         // Track Goals
-                        if ((targetNode.data as SubAgentNodeData).isGoal && normalized.success) {
+                        if (toolData.isGoal && normalized.success) {
                             setMetrics(prev => ({ 
                                 ...prev, 
                                 successfulResolutions: prev.successfulResolutions + 1, 
@@ -1297,6 +1597,15 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                     } catch (error: any) {
                         const errorMsg = error.message || 'Tool execution failed';
                         const errorCode = error.message?.includes('timeout') ? 'TOOL_TIMEOUT' : 'TOOL_EXECUTION_ERROR';
+                        
+                        // End tool span with error
+                        if (toolSpanContext) {
+                            tracerRef.current?.endSpan(toolSpanContext.spanId, {
+                                success: false,
+                                error: errorMsg,
+                                errorCode
+                            });
+                        }
                         
                         addLog('system', `❌ Tool Error: ${errorMsg}`);
                         addLog('debug', 'Tool Error Details', {
@@ -1337,6 +1646,16 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
             } catch (error: any) {
                 // Catch-all for any unexpected errors
                 const errorMsg = error.message || 'Unexpected error during tool call';
+                
+                // End tool span with error
+                if (toolSpanContext) {
+                    tracerRef.current?.endSpan(toolSpanContext.spanId, {
+                        success: false,
+                        error: errorMsg,
+                        errorCode: 'UNEXPECTED_ERROR'
+                    });
+                }
+                
                 console.error('Unexpected error in onToolCall:', error);
                 addLog('debug', 'Unexpected Tool Call Error', {
                     toolName,
@@ -1353,6 +1672,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                     } 
                 });
             }
+        }
+        
+        // End batch trace
+        if (toolCallTraceContext) {
+            tracerRef.current?.endSpan(toolCallTraceContext.spanId, {
+                toolCount: toolCalls.length,
+                responseCount: responses.length
+            });
         }
         
         return responses;
@@ -1473,18 +1800,205 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
   return (
     <aside className="w-[420px] h-full bg-white border-l border-slate-200 flex flex-col shadow-xl z-20 font-sans">
         {/* Header */}
-        <div className="p-4 border-b border-slate-100 bg-white flex justify-between items-center z-10">
-            <h2 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
-                <div className="p-1.5 bg-amber-50 rounded-md text-amber-500">
-                    <Zap size={16} className="fill-current" />
+        <div className="p-4 border-b border-slate-100 bg-white flex flex-col gap-3 z-10">
+            <div className="flex justify-between items-center">
+                <h2 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+                    <div className="p-1.5 bg-amber-50 rounded-md text-amber-500">
+                        <Zap size={16} className="fill-current" />
+                    </div>
+                    Simulator
+                </h2>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => setShowObservability(!showObservability)}
+                        className={`p-2 rounded-lg transition-colors ${
+                            showObservability 
+                                ? 'bg-indigo-100 text-indigo-600' 
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                        title="Toggle Observability"
+                    >
+                        <Activity size={16} />
+                    </button>
+                    <div className={`flex items-center gap-2 text-[10px] font-bold px-3 py-1 rounded-full border transition-all ${isCallActive ? 'bg-emerald-50 border-emerald-200 text-emerald-700 shadow-sm' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
+                        <div className={`w-2 h-2 rounded-full ${isCallActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`}></div>
+                        {isCallActive ? 'LIVE SESSION' : 'IDLE'}
+                    </div>
                 </div>
-                Simulator
-            </h2>
-            <div className={`flex items-center gap-2 text-[10px] font-bold px-3 py-1 rounded-full border transition-all ${isCallActive ? 'bg-emerald-50 border-emerald-200 text-emerald-700 shadow-sm' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
-                <div className={`w-2 h-2 rounded-full ${isCallActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`}></div>
-                {isCallActive ? 'LIVE SESSION' : 'IDLE'}
+            </div>
+            
+            {/* App Variant Selector */}
+            <div className="flex items-center gap-2">
+                <label className="text-[10px] font-medium text-slate-600 whitespace-nowrap">App Variant:</label>
+                <select
+                    value={selectedAppVariant}
+                    onChange={(e) => {
+                        setSelectedAppVariant(e.target.value);
+                        if (e.target.value && testPanelAdapterRef.current) {
+                            testPanelAdapterRef.current.loadAppVariant(e.target.value).catch(err => {
+                                console.error('Failed to load app variant:', err);
+                                addLog('system', `❌ Failed to load app variant: ${err.message}`);
+                            });
+                        }
+                    }}
+                    className="flex-1 text-[10px] px-2 py-1.5 border border-slate-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                    <option value="">None (Use Node Config)</option>
+                    <option value="hospitality_hotel_v1">🏨 Hotel Management</option>
+                    <option value="travel_airline_v1">✈️ Airline Booking</option>
+                    <option value="ecommerce_support_v1">🛒 E-Commerce Support</option>
+                </select>
+            </div>
+
+            {/* Mode Tabs */}
+            <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+                <button
+                    onClick={() => setSimulationMode('voice')}
+                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium transition-all ${
+                        simulationMode === 'voice'
+                            ? 'bg-white text-indigo-600 shadow-sm'
+                            : 'text-slate-600 hover:text-slate-800'
+                    }`}
+                >
+                    <Mic size={12} />
+                    Voice
+                </button>
+                <button
+                    onClick={() => setSimulationMode('text')}
+                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-medium transition-all ${
+                        simulationMode === 'text'
+                            ? 'bg-white text-indigo-600 shadow-sm'
+                            : 'text-slate-600 hover:text-slate-800'
+                    }`}
+                >
+                    <Type size={12} />
+                    Text
+                </button>
             </div>
         </div>
+
+        {/* System Status Panel */}
+        <SystemStatusPanel
+            performanceMonitor={performanceMonitorRef.current || undefined}
+            healthChecker={healthCheckerRef.current || undefined}
+            analyticsManager={analyticsManagerRef.current || undefined}
+            autoRefresh={true}
+            refreshInterval={5000}
+        />
+
+        {/* Observability Panel */}
+        {showObservability && (
+            <div className="border-b border-slate-200 h-96">
+                <ObservabilityPanel
+                    performanceMonitor={performanceMonitorRef.current || undefined}
+                    healthChecker={healthCheckerRef.current || undefined}
+                    analyticsManager={analyticsManagerRef.current || undefined}
+                    tracer={tracerRef.current || undefined}
+                    reliabilityTracker={reliabilityTrackerRef.current || undefined}
+                    logger={loggerRef.current || undefined}
+                    autoRefresh={true}
+                    refreshInterval={5000}
+                />
+            </div>
+        )}
+
+        {/* Text Mode Interface */}
+        {simulationMode === 'text' && (
+            <div className="flex-1 flex flex-col border-b border-slate-200 bg-slate-50">
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                    {logs.length === 0 && (
+                        <div className="text-center text-slate-300 mt-20 text-xs">
+                            Start a text conversation by typing below
+                        </div>
+                    )}
+                    {logs.map(log => {
+                        if (log.role === 'debug') return <DebugLogItem key={log.id} log={log} />;
+                        if (log.role === 'system') {
+                            return (
+                                <div key={log.id} className="flex justify-center my-2 animate-fadeIn">
+                                    <div className={`text-[10px] font-medium px-3 py-1 rounded-full border shadow-sm flex items-center gap-1.5 max-w-[90%] text-center ${
+                                        log.text.includes('Error') || log.text.includes('Failed') ? 'bg-rose-50 text-rose-600 border-rose-100' : 
+                                        log.text.includes('GOAL') ? 'bg-amber-50 text-amber-600 border-amber-100' : 
+                                        log.text.includes('Consulting') ? 'bg-cyan-50 text-cyan-600 border-cyan-100' :
+                                        'bg-white text-slate-500 border-slate-200'
+                                    }`}>
+                                        {log.text.includes('GOAL') && <Target size={10} />}
+                                        {log.text.includes('Consulting') && <Network size={10} />}
+                                        {log.text}
+                                    </div>
+                                </div>
+                            );
+                        }
+                        const isUser = log.role === 'user';
+                        return (
+                            <div key={log.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} animate-fadeIn group`}>
+                                <div className={`flex flex-col max-w-[85%] ${isUser ? 'items-end' : 'items-start'}`}>
+                                    <div className="flex items-center gap-2 mb-1 px-1">
+                                        {isUser ? (
+                                            <>
+                                                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">User</span>
+                                                <User size={10} className="text-slate-400"/>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Bot size={12} className="text-indigo-400"/>
+                                                <span className="text-[9px] text-indigo-400 font-bold uppercase tracking-wider">AI Agent</span>
+                                            </>
+                                        )}
+                                    </div>
+                                    <div className={`p-3 rounded-2xl shadow-sm text-xs leading-relaxed border ${
+                                        isUser 
+                                        ? 'bg-indigo-600 text-white rounded-tr-sm border-indigo-600' 
+                                        : 'bg-white text-slate-700 rounded-tl-sm border-slate-200'
+                                    }`}>
+                                        {log.text}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+                <div className="p-3 bg-white border-t border-slate-200">
+                    <form
+                        onSubmit={async (e) => {
+                            e.preventDefault();
+                            if (!textInput.trim() || !testPanelAdapterRef.current) return;
+                            
+                            const userMessage = textInput.trim();
+                            setTextInput('');
+                            addLog('user', userMessage);
+                            
+                            try {
+                                const response = await testPanelAdapterRef.current.processCallerInput(
+                                    userMessage,
+                                    textSessionId
+                                );
+                                addLog('agent', response);
+                                setMetrics(prev => ({ ...prev, totalInteractions: prev.totalInteractions + 1 }));
+                            } catch (error: any) {
+                                addLog('system', `❌ Error: ${error.message}`);
+                            }
+                        }}
+                        className="flex gap-2"
+                    >
+                        <input
+                            type="text"
+                            value={textInput}
+                            onChange={(e) => setTextInput(e.target.value)}
+                            placeholder="Type your message..."
+                            className="flex-1 px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        />
+                        <button
+                            type="submit"
+                            disabled={!textInput.trim()}
+                            className="px-4 py-2 bg-indigo-600 text-white text-xs font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                            Send
+                        </button>
+                    </form>
+                </div>
+            </div>
+        )}
 
         {/* API Key Error */}
         {apiKeyError && (
@@ -1497,7 +2011,8 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
             </div>
         )}
 
-        {/* Audio Visualizer */}
+        {/* Audio Visualizer (Voice Mode Only) */}
+        {simulationMode === 'voice' && (
         <div className="h-44 bg-slate-900 border-b border-slate-200 relative flex flex-col overflow-hidden">
              <canvas ref={canvasRef} width={420} height={176} className="w-full h-full object-cover opacity-90" />
              
@@ -1546,6 +2061,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                 </div>
              )}
         </div>
+        )}
 
         {/* Stats Bar */}
         <div className="bg-white border-b border-slate-100 py-2 px-4 flex items-center justify-between text-[10px] font-medium text-slate-500">
@@ -1560,13 +2076,20 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                         {metrics.successfulResolutions} Resolved
                     </span>
                 </div>
+                <div className="flex items-center gap-1.5" title="Agents">
+                    <Network size={12} className="text-slate-400" />
+                    <span className="text-[10px] text-slate-500">
+                        {departmentCount} Depts / {toolCount} Tools
+                    </span>
+                </div>
              </div>
              <button onClick={() => {}} className="hover:text-indigo-600 transition-colors" title="Download Log">
                  <Download size={14} />
              </button>
         </div>
 
-        {/* Chat Logs */}
+        {/* Chat Logs (Voice Mode Only) */}
+        {simulationMode === 'voice' && (
         <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/30 scrollbar-thin scrollbar-thumb-slate-200">
              {logs.length === 0 && <div className="text-center text-slate-300 mt-20 text-xs">No activity yet</div>}
              
@@ -1623,8 +2146,10 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
              })}
              <div ref={logsEndRef} />
         </div>
+        )}
 
-        {/* Controls */}
+        {/* Controls (Voice Mode Only) */}
+        {simulationMode === 'voice' && (
         <div className="p-4 bg-white border-t border-slate-100 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-30">
             {!isCallActive ? (
                 <button 
@@ -1646,7 +2171,11 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                         <Square size={16} fill="currentColor" />
                         End Session
                     </button>
-                    <button className="px-5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl flex items-center justify-center transition-colors">
+                    <button 
+                        className="px-5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl flex items-center justify-center transition-colors"
+                        aria-label="Microphone"
+                        title="Microphone"
+                    >
                         <Mic size={20} />
                     </button>
                 </div>
@@ -1658,6 +2187,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                 </span>
             </div>
         </div>
+        )}
     </aside>
   );
 };

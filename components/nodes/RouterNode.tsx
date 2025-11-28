@@ -184,12 +184,12 @@ const RouterNode: React.FC<NodeProps<RouterNodeData>> = ({ data, id }) => {
     setDraggedIntent(null);
   };
 
-  const isActive = data.active;
+  const isActive = !!data.active;
   const isError = !!data.error;
   const voiceSettings = data.voiceSettings || { speed: 1.0, interruptible: true, fillerWords: false };
 
   return (
-    <div className={`w-80 rounded-2xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-purple-400 ring-2 ring-purple-100 shadow-glow-indigo' : 'border-purple-200'}`}>
+    <div className={`w-80 rounded-2xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-purple-400 ring-4 ring-purple-200 shadow-glow-purple animate-pulse-glow' : 'border-purple-200'}`}>
       
       {/* Active Header */}
       <div 

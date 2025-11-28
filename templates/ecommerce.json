@@ -1,0 +1,67 @@
+{
+  "templateId": "ecommerce_support_v1",
+  "name": "E-Commerce Customer Service",
+  "description": "Order management, product inquiries, and customer support",
+  "version": "1.0",
+  "masterAgent": {
+    "agentId": "ecommerce_master",
+    "systemPrompt": "You are a helpful e-commerce customer service representative. You assist customers with orders, products, returns, and general inquiries. Be friendly and solution-oriented.",
+    "voiceSettings": {
+      "speed": 1.0,
+      "tone": "friendly",
+      "language": "en"
+    },
+    "intents": [
+      "track_order",
+      "check_order_status",
+      "return_item",
+      "get_product_info",
+      "process_refund",
+      "update_shipping",
+      "apply_promo_code",
+      "get_recommendations"
+    ]
+  },
+  "subAgents": [
+    {
+      "module": "OrderAgentModule",
+      "config": {
+        "agentId": "order_agent",
+        "specialty": "order_management",
+        "systemPrompt": "You handle order inquiries, tracking, and status updates. Always provide accurate shipping information and delivery estimates.",
+        "model": "pro",
+        "tasks": [
+          "track_order",
+          "check_order_status",
+          "get_order_history",
+          "update_shipping_address",
+          "cancel_order"
+        ],
+        "tools": ["order_database", "shipping_api", "inventory_system"],
+        "businessRules": {
+          "return_policy": {
+            "return_window_days": 30,
+            "free_return_threshold": 50.00
+          }
+        }
+      }
+    },
+    {
+      "module": "ProductAgentModule",
+      "config": {
+        "agentId": "product_agent",
+        "specialty": "product_information",
+        "systemPrompt": "You provide detailed product information, availability, and recommendations.",
+        "model": "flash",
+        "tasks": [
+          "get_product_info",
+          "check_availability",
+          "get_recommendations",
+          "compare_products"
+        ],
+        "tools": ["product_catalog", "inventory_api", "recommendation_engine"]
+      }
+    }
+  ]
+}
+

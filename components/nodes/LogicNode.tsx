@@ -16,7 +16,7 @@ const LogicNode: React.FC<NodeProps<LogicNodeData>> = ({ data, id }) => {
   const isError = !!data.error;
 
   return (
-    <div className={`w-64 rounded-xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-rose-400 ring-2 ring-rose-100 shadow-glow-rose' : 'border-slate-300'}`}>
+    <div className={`w-64 rounded-xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-rose-400 ring-4 ring-rose-200 shadow-glow-rose animate-pulse-glow' : 'border-slate-300'}`}>
       
       {/* Header */}
       <div 

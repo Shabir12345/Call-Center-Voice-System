@@ -234,12 +234,16 @@ export class CommunicationManager {
 
       // If message requires response and we got one, handle it
       if (message.requiresResponse && response) {
-        // Check if this is a response to a pending request
-        if (message.correlationId) {
-          this.handleResponse(message);
+        // Create response message with correlation to original request
+        const responseMessage = createResponse(message, message.to, response);
+        
+        // Check if this is a response to a pending request (original message was waiting for response)
+        const pendingRequest = this.pendingRequests.get(message.id);
+        if (pendingRequest) {
+          // This is a response to a pending request - resolve it
+          this.handleResponse(responseMessage);
         } else {
-          // Create response message
-          const responseMessage = createResponse(message, message.to, response);
+          // No pending request, just send the response message
           await this.sendMessage(responseMessage);
         }
       }

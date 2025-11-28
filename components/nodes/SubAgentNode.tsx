@@ -66,7 +66,7 @@ const SubAgentNode: React.FC<NodeProps<SubAgentNodeData>> = ({ data, id }) => {
   const isGoal = !!data.isGoal;
 
   return (
-    <div className={`w-72 rounded-2xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-emerald-400 ring-2 ring-emerald-100 shadow-glow-emerald' : isGoal ? 'border-amber-400 ring-2 ring-amber-100' : 'border-emerald-200'}`}>
+    <div className={`w-72 rounded-2xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-emerald-400 ring-4 ring-emerald-200 shadow-glow-emerald animate-pulse-glow' : isGoal ? 'border-amber-400 ring-2 ring-amber-100' : 'border-emerald-200'}`}>
       
       {/* Header */}
       <div 

@@ -1,0 +1,113 @@
+{
+  "templateId": "hospitality_hotel_v1",
+  "name": "Hotel Management System",
+  "description": "Complete hotel reservation and concierge management",
+  "version": "1.0",
+  "masterAgent": {
+    "agentId": "hotel_master",
+    "systemPrompt": "You are a friendly and professional hotel concierge. You help guests with reservations, modifications, cancellations, and general inquiries. Always be courteous and helpful.",
+    "voiceSettings": {
+      "speed": 1.0,
+      "tone": "welcoming",
+      "language": "en",
+      "greeting": "Welcome to our hotel. How can I assist you today?"
+    },
+    "intents": [
+      "book_room",
+      "modify_reservation",
+      "cancel_reservation",
+      "confirm_reservation",
+      "check_in",
+      "check_out",
+      "request_service",
+      "get_recommendations"
+    ],
+    "guardrails": {
+      "bannedPhrases": [],
+      "fallbackResponse": "I apologize, but I'm having trouble understanding. Could you please rephrase that?"
+    }
+  },
+  "subAgents": [
+    {
+      "module": "ReservationAgentModule",
+      "config": {
+        "agentId": "reservation_agent",
+        "specialty": "reservations",
+        "systemPrompt": "You are a reservation specialist. You handle booking, modification, and cancellation of hotel reservations. Always verify guest information and confirm all details.",
+        "model": "pro",
+        "tasks": [
+          "book_room",
+          "modify_reservation",
+          "cancel_reservation",
+          "confirm_reservation",
+          "check_availability"
+        ],
+        "tools": ["reservation_database", "availability_checker", "pricing_engine"],
+        "businessRules": {
+          "cancellation_policy": {
+            "free_cancellation_hours": 48,
+            "partial_refund_hours": 24,
+            "no_refund_hours": 0
+          },
+          "modification_policy": {
+            "free_modification_hours": 72,
+            "change_fee": 25.00
+          }
+        },
+        "bidirectionalEnabled": true,
+        "maxConversationDepth": 3
+      }
+    },
+    {
+      "module": "ConciergeAgentModule",
+      "config": {
+        "agentId": "concierge_agent",
+        "specialty": "concierge",
+        "systemPrompt": "You are a hotel concierge. You help guests with local recommendations, service requests, and general inquiries about the hotel and area.",
+        "model": "flash",
+        "tasks": [
+          "request_service",
+          "get_recommendations",
+          "get_local_info",
+          "schedule_service"
+        ],
+        "tools": ["local_database", "service_scheduler", "recommendation_engine"],
+        "bidirectionalEnabled": true
+      }
+    },
+    {
+      "module": "LoyaltyAgentModule",
+      "config": {
+        "agentId": "loyalty_agent",
+        "specialty": "loyalty_program",
+        "systemPrompt": "You manage the hotel loyalty program. You check points, process redemptions, and explain benefits.",
+        "model": "flash",
+        "tasks": [
+          "check_loyalty_points",
+          "redeem_points",
+          "check_tier_status",
+          "explain_benefits"
+        ],
+        "tools": ["loyalty_database", "points_calculator"]
+      }
+    }
+  ],
+  "communicationConfig": {
+    "timeout": {
+      "subAgentLoop": 30000,
+      "toolExecution": 10000
+    },
+    "retry": {
+      "enabled": true,
+      "maxRetries": 2,
+      "initialDelay": 1000,
+      "maxDelay": 5000
+    }
+  },
+  "stateManagement": {
+    "storageType": "session",
+    "sessionTimeout": 3600000,
+    "maxHistorySize": 20
+  }
+}
+

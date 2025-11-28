@@ -10,6 +10,8 @@ export enum NodeType {
   INTEGRATION = 'integrationNode',
   NOTE = 'noteNode',
   LOGIC = 'logicNode', // New Logic Node
+  KNOWLEDGE_BASE = 'knowledgeBaseNode', // Knowledge Base Node
+  CUSTOMER_PROFILE = 'customerProfileNode', // Customer Profile Node
 }
 
 // --- Database Types ---
@@ -48,6 +50,91 @@ export interface VoiceSettings {
   fillerWords: boolean;
 }
 
+// --- Call Recording Types ---
+export interface CallRecording {
+  id: string;
+  sessionId: string;
+  startTime: number;
+  endTime?: number;
+  duration?: number;
+  audioBlob?: Blob;
+  audioUrl?: string;
+  transcript?: string;
+  metadata?: {
+    agentId?: string;
+    agentName?: string;
+    callerId?: string;
+    quality?: number;
+    sentiment?: SentimentScore;
+  };
+}
+
+// --- Sentiment Analysis Types ---
+export interface SentimentScore {
+  score: number; // -1 to 1 (negative to positive)
+  label: 'positive' | 'neutral' | 'negative';
+  confidence: number; // 0 to 1
+  timestamp: number;
+}
+
+// --- Language Support Types ---
+export type SupportedLanguage = 'en' | 'es' | 'fr' | 'de' | 'zh' | 'ja';
+
+export interface LanguageConfig {
+  code: SupportedLanguage;
+  name: string;
+  nativeName: string;
+  systemPrompt?: string;
+}
+
+// --- CRM Integration Types ---
+export interface CustomerProfile {
+  id: string;
+  phoneNumber?: string;
+  email?: string;
+  name?: string;
+  company?: string;
+  tags?: string[];
+  customFields?: Record<string, any>;
+  lastContact?: number;
+  contactHistory?: Array<{
+    date: number;
+    type: 'call' | 'email' | 'chat';
+    summary: string;
+  }>;
+}
+
+export interface CRMConfig {
+  provider: 'salesforce' | 'hubspot' | 'custom';
+  apiUrl?: string;
+  apiKey?: string;
+  customHeaders?: Record<string, string>;
+}
+
+// --- Knowledge Base Types ---
+export interface KnowledgeBaseArticle {
+  id: string;
+  title: string;
+  content: string;
+  category?: string;
+  tags?: string[];
+  lastUpdated: number;
+  views?: number;
+}
+
+export interface KnowledgeBaseNodeData extends BaseNodeData {
+  articles: KnowledgeBaseArticle[];
+  searchType: 'keyword' | 'vector';
+  vectorModel?: string;
+}
+
+// --- Customer Profile Node Types ---
+export interface CustomerProfileNodeData extends BaseNodeData {
+  crmConfig?: CRMConfig;
+  autoDetect?: boolean;
+  fields?: string[];
+}
+
 export interface BaseNodeData {
   label: string;
   active?: boolean; // Visual feedback for simulation
@@ -81,6 +168,10 @@ export interface RouterNodeData extends BaseNodeData {
   bidirectionalEnabled?: boolean; // Enable bidirectional communication with sub-agents
   allowSubAgentQueries?: boolean; // Allow sub-agents to ask questions back
   communicationTimeout?: number; // Timeout for bidirectional messages (ms)
+  
+  // Feature: Multi-language Support
+  language?: SupportedLanguage;
+  autoDetectLanguage?: boolean;
   
   onFieldChange?: (id: string, field: string, value: string | any) => void;
   onApplyTemplate?: (id: string, templateId: string) => void;
@@ -136,7 +227,7 @@ export interface SubAgentNodeData extends BaseNodeData {
 }
 
 export interface IntegrationNodeData extends BaseNodeData {
-  integrationType: 'mock' | 'rest' | 'graphql';
+  integrationType: 'mock' | 'rest' | 'graphql' | 'calendar';
   url?: string;
   authType?: 'none' | 'bearer' | 'apiKey' | 'custom';
   apiHeaderName?: string;
@@ -168,7 +259,7 @@ export interface NoteNodeData extends BaseNodeData {
   onColorChange?: (id: string, color: string) => void;
 }
 
-export type AppNodeData = RouterNodeData | DepartmentNodeData | SubAgentNodeData | IntegrationNodeData | NoteNodeData | LogicNodeData;
+export type AppNodeData = RouterNodeData | DepartmentNodeData | SubAgentNodeData | IntegrationNodeData | NoteNodeData | LogicNodeData | KnowledgeBaseNodeData | CustomerProfileNodeData;
 
 export type AppNode = Node<AppNodeData>;
 

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { IntegrationNodeData, DatabaseConfig } from '../../types';
-import { Globe, Trash2, FileJson, AlertCircle, Settings, Shield, ChevronDown, ChevronRight, Code2, Sparkles, Key, Play, Check, X, Database, Clock, Activity, Zap } from 'lucide-react';
+import { Globe, Trash2, FileJson, AlertCircle, Settings, Shield, ChevronDown, ChevronRight, Code2, Sparkles, Key, Play, Check, X, Database, Clock, Activity, Zap, Calendar } from 'lucide-react';
 import { HelpTip } from '../ui/HelpTip';
 import { isValidJson, isValidUrl } from '../../utils/validators';
 import { DatabaseConfigPanel } from '../panels/DatabaseConfigPanel';
@@ -53,11 +53,12 @@ const IntegrationNode: React.FC<NodeProps<IntegrationNodeData>> = ({ data, id })
   const styles = {
       mock: { color: 'blue', icon: FileJson, label: 'Mock Data' },
       rest: { color: 'indigo', icon: Globe, label: 'REST API' },
-      graphql: { color: 'pink', icon: Code2, label: 'GraphQL' }
+      graphql: { color: 'pink', icon: Code2, label: 'GraphQL' },
+      calendar: { color: 'green', icon: Calendar, label: 'Calendar' }
   }[type];
 
   return (
-    <div className={`w-80 rounded-2xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-yellow-400 ring-2 ring-yellow-100 shadow-glow-amber' : `border-${styles.color}-200`}`}>
+    <div className={`w-80 rounded-2xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-yellow-400 ring-4 ring-yellow-200 shadow-glow-amber animate-pulse-glow' : `border-${styles.color}-200`}`}>
       
       {/* Header */}
       <div 
@@ -102,7 +103,33 @@ const IntegrationNode: React.FC<NodeProps<IntegrationNodeData>> = ({ data, id })
                 </div>
             )}
 
-            {type !== 'mock' && (
+            {type === 'calendar' && (
+                <div className="space-y-3">
+                    <div>
+                        <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 block">Calendar Provider</label>
+                        <select className="nodrag w-full text-xs border border-slate-200 rounded px-2 py-1.5 focus:border-green-400 outline-none" value={(data as any).calendarProvider || 'google'} onChange={(e) => handleChange('calendarProvider' as any, e.target.value)}>
+                            <option value="google">Google Calendar</option>
+                            <option value="outlook">Microsoft Outlook</option>
+                            <option value="apple">Apple Calendar</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 block">Connection ID</label>
+                        <input type="text" className="nodrag w-full text-xs border border-slate-200 rounded px-2 py-1.5 focus:border-green-400 outline-none" placeholder="calendar-connection-id" value={(data as any).connectionId || ''} onChange={(e) => handleChange('connectionId' as any, e.target.value)} />
+                    </div>
+                    <div>
+                        <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 block">Calendar ID</label>
+                        <input type="text" className="nodrag w-full text-xs border border-slate-200 rounded px-2 py-1.5 focus:border-green-400 outline-none" placeholder="primary or calendar-id" value={(data as any).calendarId || ''} onChange={(e) => handleChange('calendarId' as any, e.target.value)} />
+                    </div>
+                    <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                        <p className="text-[10px] text-green-700">
+                            Connect your calendar in workflow settings to use this integration.
+                        </p>
+                    </div>
+                </div>
+            )}
+
+            {type !== 'mock' && type !== 'calendar' && (
                 <div className="space-y-3">
                     <div>
                         <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 block">Endpoint URL</label>

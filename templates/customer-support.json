@@ -1,0 +1,102 @@
+{
+  "templateId": "customer_support_v1",
+  "name": "General Customer Support",
+  "description": "Multi-purpose customer support system",
+  "version": "1.0",
+  "masterAgent": {
+    "agentId": "support_master",
+    "systemPrompt": "You are a friendly and helpful customer support agent. You assist customers with a wide range of inquiries and issues. Always be empathetic and solution-oriented.",
+    "voiceSettings": {
+      "speed": 1.0,
+      "tone": "friendly",
+      "language": "en",
+      "greeting": "Hello! How can I help you today?"
+    },
+    "intents": [
+      "get_account_info",
+      "update_account",
+      "report_issue",
+      "request_refund",
+      "check_order_status",
+      "get_product_info",
+      "schedule_callback",
+      "escalate_to_human"
+    ],
+    "guardrails": {
+      "bannedPhrases": [],
+      "fallbackResponse": "I'm here to help. Could you tell me more about what you need?"
+    }
+  },
+  "subAgents": [
+    {
+      "module": "AccountAgentModule",
+      "config": {
+        "agentId": "account_agent",
+        "specialty": "account_management",
+        "systemPrompt": "You handle account-related inquiries and updates. Always verify identity before making changes.",
+        "model": "pro",
+        "tasks": [
+          "get_account_info",
+          "update_account",
+          "verify_identity"
+        ],
+        "tools": ["account_database", "identity_verification"],
+        "security_level": "high"
+      }
+    },
+    {
+      "module": "IssueAgentModule",
+      "config": {
+        "agentId": "issue_agent",
+        "specialty": "issue_resolution",
+        "systemPrompt": "You help customers resolve issues and create support tickets when needed.",
+        "model": "pro",
+        "tasks": [
+          "report_issue",
+          "create_ticket",
+          "check_ticket_status",
+          "escalate_issue"
+        ],
+        "tools": ["ticket_system", "knowledge_base"]
+      }
+    },
+    {
+      "module": "RefundAgentModule",
+      "config": {
+        "agentId": "refund_agent",
+        "specialty": "refunds",
+        "systemPrompt": "You process refund requests and handle payment-related inquiries.",
+        "model": "pro",
+        "tasks": [
+          "request_refund",
+          "check_refund_status",
+          "process_payment"
+        ],
+        "tools": ["payment_processor", "refund_system"],
+        "businessRules": {
+          "refund_policy": {
+            "window_days": 30,
+            "requires_approval": true
+          }
+        }
+      }
+    }
+  ],
+  "communicationConfig": {
+    "timeout": {
+      "subAgentLoop": 30000,
+      "toolExecution": 10000
+    },
+    "retry": {
+      "enabled": true,
+      "maxRetries": 2,
+      "initialDelay": 1000
+    }
+  },
+  "stateManagement": {
+    "storageType": "session",
+    "sessionTimeout": 3600000,
+    "maxHistorySize": 20
+  }
+}
+

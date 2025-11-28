@@ -11,6 +11,9 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react()],
       define: {
+        // ⚠️ SECURITY WARNING: API keys exposed in client bundle!
+        // TODO: Move to backend API proxy (see docs/SECURITY_API_KEY_FIX.md)
+        // This is a temporary solution - API keys should NEVER be in client code
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
       },

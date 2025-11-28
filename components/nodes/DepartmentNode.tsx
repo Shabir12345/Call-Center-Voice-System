@@ -189,11 +189,11 @@ const DepartmentNode: React.FC<NodeProps<DepartmentNodeData>> = ({ data, id }) =
       } catch (e) { console.error(e); } finally { setIsOptimizingPrompt(false); }
   };
 
-  const isActive = data.active;
+  const isActive = !!data.active;
   const isError = !!data.error;
 
   return (
-    <div className={`w-80 rounded-2xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-cyan-400 ring-2 ring-cyan-100 shadow-glow-emerald' : 'border-cyan-200'}`}>
+    <div className={`w-80 rounded-2xl bg-white border shadow-node transition-all duration-300 hover:shadow-node-hover group ${isError ? 'border-red-400 ring-2 ring-red-100' : isActive ? 'border-cyan-400 ring-4 ring-cyan-200 shadow-glow-cyan animate-pulse-glow' : 'border-cyan-200'}`}>
       
       {/* Header */}
       <div 

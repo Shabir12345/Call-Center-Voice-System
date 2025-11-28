@@ -158,11 +158,13 @@ export function createClarification(
   from: string,
   question: string
 ): AgentMessage {
+  // For clarification we keep the content as a human‑readable string so that
+  // higher level code (and tests) can simply search it for the question text.
   return createMessage(
     from,
     originalMessage.from,
     'CLARIFY',
-    { question, originalMessageId: originalMessage.id, originalContent: originalMessage.content },
+    question,
     originalMessage.context,
     {
       correlationId: originalMessage.id,

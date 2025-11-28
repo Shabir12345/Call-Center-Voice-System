@@ -1,0 +1,66 @@
+{
+  "templateId": "healthcare_appointments_v1",
+  "name": "Healthcare Appointment System",
+  "description": "Medical appointment scheduling and patient information",
+  "version": "1.0",
+  "masterAgent": {
+    "agentId": "healthcare_master",
+    "systemPrompt": "You are a professional medical appointment scheduler. You help patients schedule, modify, and cancel appointments. Always maintain patient privacy and be empathetic.",
+    "voiceSettings": {
+      "speed": 0.9,
+      "tone": "professional_caring",
+      "language": "en"
+    },
+    "intents": [
+      "schedule_appointment",
+      "modify_appointment",
+      "cancel_appointment",
+      "check_appointment",
+      "get_doctor_info",
+      "request_prescription_refill"
+    ],
+    "guardrails": {
+      "bannedPhrases": [],
+      "privacy_required": true,
+      "hipaa_compliant": true
+    }
+  },
+  "subAgents": [
+    {
+      "module": "AppointmentAgentModule",
+      "config": {
+        "agentId": "appointment_agent",
+        "specialty": "appointment_scheduling",
+        "systemPrompt": "You schedule medical appointments. Verify patient information, preferred dates, and reason for visit. Always confirm appointment details.",
+        "model": "pro",
+        "tasks": [
+          "schedule_appointment",
+          "modify_appointment",
+          "cancel_appointment",
+          "check_appointment",
+          "get_availability"
+        ],
+        "tools": ["appointment_system", "doctor_schedule", "patient_database"],
+        "businessRules": {
+          "cancellation_policy": {
+            "advance_notice_hours": 24,
+            "late_cancellation_fee": 25.00
+          },
+          "appointment_types": [
+            "general_checkup",
+            "specialist_consultation",
+            "follow_up",
+            "urgent_care"
+          ]
+        },
+        "bidirectionalEnabled": true
+      }
+    }
+  ],
+  "stateManagement": {
+    "storageType": "long_term",
+    "encryption_required": true,
+    "hipaa_compliant": true
+  }
+}
+

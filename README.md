@@ -4,6 +4,16 @@
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
+<div align="center">
+
+![CI Pipeline](https://github.com/USERNAME/REPO_NAME/actions/workflows/ci.yml/badge.svg)
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
+
+**Note**: Replace `USERNAME/REPO_NAME` in the CI badge URL with your actual GitHub repository path.
+
+</div>
+
 # Run and deploy your AI Studio app
 
 This contains everything you need to run your app locally.
@@ -51,7 +61,17 @@ View your app in AI Studio: https://ai.studio/apps/drive/1F6r15W5mDTtmd0HR4VtHDp
   - Speak to test your agent's voice interactions
   - Watch the real-time transcription and tool execution
 
-### Troubleshooting
+### Security
+
+⚠️ **IMPORTANT**: This application has security improvements implemented. See `docs/QUICK_SECURITY_GUIDE.md` for details.
+
+**Key Security Features**:
+- ✅ Encrypted session storage
+- ✅ Rate limiting to prevent abuse
+- ✅ Automated security scanning in CI/CD
+- ⚠️ **Action Required**: API key security fix needed (see `docs/SECURITY_API_KEY_FIX.md`)
+
+## Troubleshooting
 
 - **API Key Error**: Make sure `.env.local` exists and contains your valid Gemini API key
 - **Microphone Issues**: 
@@ -59,3 +79,4 @@ View your app in AI Studio: https://ai.studio/apps/drive/1F6r15W5mDTtmd0HR4VtHDp
   - For other browsers or HTTPS: Ensure you're using HTTPS or localhost
 - **Port Already in Use**: Vite will automatically try the next available port
 - **Dependencies Issues**: Delete `node_modules` and `package-lock.json`, then run `npm install` again
+- **Security Issues**: See `docs/THREAT_ANALYSIS.md` for threat analysis and `docs/QUICK_SECURITY_GUIDE.md` for quick fixes

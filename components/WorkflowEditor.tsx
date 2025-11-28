@@ -29,9 +29,15 @@ import SubAgentNode from './nodes/SubAgentNode';
 import IntegrationNode from './nodes/IntegrationNode';
 import LogicNode from './nodes/LogicNode';
 import NoteNode from './nodes/NoteNode';
+import KnowledgeBaseNode from './nodes/KnowledgeBaseNode';
+import CustomerProfileNode from './nodes/CustomerProfileNode';
 import { ContextMenu } from './ui/ContextMenu';
-import { NodeType, AppNode, RouterNodeData, DepartmentNodeData, SubAgentNodeData, IntegrationNodeData, NoteNodeData, LogicNodeData, AgentParameter, DatabaseConfig, VoiceSettings, ProjectMetadata } from '../types';
-import { Save, Upload, Undo, Redo, Folder, Plus, ChevronDown, Check, Download, FileDown, Search, Wand2, Code, Share2, X, Play } from 'lucide-react';
+import { NodeType, AppNode, RouterNodeData, DepartmentNodeData, SubAgentNodeData, IntegrationNodeData, NoteNodeData, LogicNodeData, KnowledgeBaseNodeData, CustomerProfileNodeData, AgentParameter, DatabaseConfig, VoiceSettings, ProjectMetadata } from '../types';
+import { Save, Upload, Undo, Redo, Folder, Plus, ChevronDown, Check, Download, FileDown, Search, Wand2, Code, Share2, X, Play, Calendar } from 'lucide-react';
+import { CalendarConnectionDialog } from './workflow/CalendarConnectionDialog';
+import { CalendarConnection } from '../types/calendarTypes';
+import { CalendarService } from '../utils/calendar/calendarService';
+import { OAuthHandler } from '../utils/calendar/oauthHandler';
 
 const nodeTypes = {
   [NodeType.ROUTER]: RouterNode,
@@ -40,6 +46,8 @@ const nodeTypes = {
   [NodeType.INTEGRATION]: IntegrationNode,
   [NodeType.NOTE]: NoteNode,
   [NodeType.LOGIC]: LogicNode,
+  [NodeType.KNOWLEDGE_BASE]: KnowledgeBaseNode,
+  [NodeType.CUSTOMER_PROFILE]: CustomerProfileNode,
 };
 
 const PROJECTS_STORAGE_KEY = 'agentflow-projects-v1';
@@ -66,6 +74,21 @@ const WorkflowEditor: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [showTemplates, setShowTemplates] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [showCalendarDialog, setShowCalendarDialog] = useState(false);
+  const [calendarConnections, setCalendarConnections] = useState<CalendarConnection[]>([]);
+  
+  // Calendar service - create once
+  const calendarServiceRef = useRef<CalendarService | null>(null);
+  const oauthHandlerRef = useRef<OAuthHandler | null>(null);
+  
+  useEffect(() => {
+    if (!oauthHandlerRef.current) {
+      oauthHandlerRef.current = new OAuthHandler();
+    }
+    if (!calendarServiceRef.current && oauthHandlerRef.current) {
+      calendarServiceRef.current = new CalendarService(oauthHandlerRef.current);
+    }
+  }, []);
 
   // Context Menu State
   const [menu, setMenu] = useState<{ type: 'node' | 'edge'; id: string; top: number; left: number } | null>(null);
@@ -225,6 +248,12 @@ const WorkflowEditor: React.FC = () => {
              onColorChange: (id, c) => { takeSnapshot(); updateNode(id, n => ({ ...n, data: { ...n.data, color: c } })); }
         }};
     }
+    if (node.type === NodeType.KNOWLEDGE_BASE) {
+        return { ...node, data: { ...node.data, ...baseHandlers }};
+    }
+    if (node.type === NodeType.CUSTOMER_PROFILE) {
+        return { ...node, data: { ...node.data, ...baseHandlers }};
+    }
     return node;
   }, [onDeleteNode, setNodes, takeSnapshot, setEdges]);
 
@@ -241,6 +270,33 @@ const WorkflowEditor: React.FC = () => {
     }, [setMenu]);
 
   const onPaneClick = useCallback(() => setMenu(null), [setMenu]);
+
+  // Load calendar connections on mount
+  useEffect(() => {
+    const loadConnections = async () => {
+      try {
+        const oauthHandler = new OAuthHandler();
+        const connections = await oauthHandler.getAllConnections();
+        setCalendarConnections(connections);
+      } catch (error) {
+        console.error('Failed to load calendar connections:', error);
+      }
+    };
+    loadConnections();
+  }, []);
+
+  // Handle calendar connection
+  const handleCalendarConnect = useCallback(async (connection: CalendarConnection) => {
+    try {
+      if (calendarServiceRef.current) {
+        await calendarServiceRef.current.registerConnection(connection);
+        setCalendarConnections(prev => [...prev.filter(c => c.id !== connection.id), connection]);
+        setShowCalendarDialog(false);
+      }
+    } catch (error) {
+      console.error('Failed to register calendar connection:', error);
+    }
+  }, []);
   
   const handleDuplicate = useCallback(() => {
       if (!menu || menu.type !== 'node') return;
@@ -411,6 +467,8 @@ const WorkflowEditor: React.FC = () => {
       else if (type === NodeType.INTEGRATION) newNode.data = { ...newNode.data, label: subType === 'rest' ? 'REST API' : subType === 'graphql' ? 'GraphQL' : 'Mock', integrationType: subType as any, mockOutput: '{"status": "ok"}', url: 'https://', method: 'GET', authType: 'none' } as IntegrationNodeData;
       else if (type === NodeType.LOGIC) newNode.data = { label: 'Condition', variableName: 'var', operator: 'equals', value: 'true' } as LogicNodeData;
       else if (type === NodeType.NOTE) newNode.data = { label: 'Note', text: '', color: '#fef3c7' } as NoteNodeData;
+      else if (type === NodeType.KNOWLEDGE_BASE) newNode.data = { ...newNode.data, label: 'Knowledge Base', articles: [], searchType: 'keyword' } as KnowledgeBaseNodeData;
+      else if (type === NodeType.CUSTOMER_PROFILE) newNode.data = { ...newNode.data, label: 'Customer Profile', autoDetect: true, fields: [] } as CustomerProfileNodeData;
       setNodes((nds) => nds.concat(augmentNodeData(newNode)));
     }, [screenToFlowPosition, setNodes, takeSnapshot, augmentNodeData]);
 
@@ -518,6 +576,19 @@ const WorkflowEditor: React.FC = () => {
                             <button onClick={() => fileInputRef.current?.click()} className="p-1.5 bg-slate-100 text-slate-600 rounded-lg hover:bg-indigo-50 hover:text-indigo-600 transition-colors" title="Import JSON">
                                 <Upload size={16}/>
                             </button>
+                            <button 
+                                onClick={() => setShowCalendarDialog(true)} 
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-50 text-green-600 text-xs font-bold rounded-lg hover:bg-green-100 transition-colors"
+                                title="Connect Calendar"
+                            >
+                                <Calendar size={14} /> 
+                                Calendar
+                                {calendarConnections.length > 0 && (
+                                    <span className="bg-green-600 text-white text-[9px] px-1.5 py-0.5 rounded-full">
+                                        {calendarConnections.length}
+                                    </span>
+                                )}
+                            </button>
                             <button onClick={() => setShowTemplates(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-600 text-xs font-bold rounded-lg hover:bg-indigo-100 transition-colors">
                                 <Wand2 size={14} /> Templates
                             </button>
@@ -572,6 +643,14 @@ const WorkflowEditor: React.FC = () => {
                          </div>
                     </div>
                 )}
+
+                {/* Calendar Connection Dialog */}
+                <CalendarConnectionDialog
+                    isOpen={showCalendarDialog}
+                    onClose={() => setShowCalendarDialog(false)}
+                    onConnect={handleCalendarConnect}
+                    existingConnections={calendarConnections}
+                />
 
             </ReactFlow>
         </div>

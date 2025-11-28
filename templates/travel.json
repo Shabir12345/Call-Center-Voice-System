@@ -1,0 +1,82 @@
+{
+  "templateId": "travel_airline_v1",
+  "name": "Airline Booking System",
+  "description": "Flight booking, modifications, and travel services",
+  "version": "1.0",
+  "masterAgent": {
+    "agentId": "airline_master",
+    "systemPrompt": "You are an efficient airline booking assistant. You help customers book flights, manage reservations, check flight status, and handle travel-related inquiries. Be clear and concise.",
+    "voiceSettings": {
+      "speed": 1.1,
+      "tone": "efficient",
+      "language": "en",
+      "greeting": "Hello, how can I help with your travel today?"
+    },
+    "intents": [
+      "search_flights",
+      "book_flight",
+      "modify_booking",
+      "cancel_booking",
+      "check_in",
+      "get_flight_status",
+      "request_assistance",
+      "upgrade_seat"
+    ]
+  },
+  "subAgents": [
+    {
+      "module": "BookingAgentModule",
+      "config": {
+        "agentId": "booking_agent",
+        "specialty": "flight_booking",
+        "systemPrompt": "You handle flight searches, bookings, and modifications. Always verify travel dates, passenger information, and preferences.",
+        "model": "pro",
+        "tasks": [
+          "search_flights",
+          "book_flight",
+          "modify_booking",
+          "cancel_booking",
+          "get_booking_details"
+        ],
+        "tools": ["flight_search_api", "booking_system", "seat_map"],
+        "businessRules": {
+          "booking_policy": {
+            "hold_time_minutes": 15,
+            "payment_required": true
+          },
+          "cancellation_policy": {
+            "refundable_ticket_hours": 24,
+            "non_refundable_fee": 200.00
+          }
+        }
+      }
+    },
+    {
+      "module": "FlightStatusAgentModule",
+      "config": {
+        "agentId": "flight_status_agent",
+        "specialty": "flight_information",
+        "systemPrompt": "You provide real-time flight status information, gate changes, and delay notifications.",
+        "model": "flash",
+        "tasks": [
+          "get_flight_status",
+          "check_delays",
+          "get_gate_info"
+        ],
+        "tools": ["flight_status_api", "airport_database"]
+      }
+    }
+  ],
+  "communicationConfig": {
+    "timeout": {
+      "subAgentLoop": 45000,
+      "toolExecution": 15000
+    },
+    "retry": {
+      "enabled": true,
+      "maxRetries": 3,
+      "initialDelay": 2000
+    }
+  }
+}
+

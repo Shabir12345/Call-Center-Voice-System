@@ -1,0 +1,72 @@
+{
+  "templateId": "financial_services_v1",
+  "name": "Financial Services Support",
+  "description": "Banking account management and financial inquiries",
+  "version": "1.0",
+  "masterAgent": {
+    "agentId": "financial_master",
+    "systemPrompt": "You are a secure banking assistant. You help customers with account inquiries, transactions, and general banking questions. Always verify identity and maintain security.",
+    "voiceSettings": {
+      "speed": 1.0,
+      "tone": "professional_secure",
+      "language": "en"
+    },
+    "intents": [
+      "check_balance",
+      "get_transaction_history",
+      "transfer_funds",
+      "pay_bill",
+      "get_account_info",
+      "report_fraud"
+    ],
+    "guardrails": {
+      "security_required": true,
+      "authentication_required": true,
+      "pci_compliant": true
+    }
+  },
+  "subAgents": [
+    {
+      "module": "AccountAgentModule",
+      "config": {
+        "agentId": "account_agent",
+        "specialty": "account_management",
+        "systemPrompt": "You handle account inquiries and balance checks. Always verify customer identity before providing sensitive information.",
+        "model": "pro",
+        "tasks": [
+          "check_balance",
+          "get_account_info",
+          "get_transaction_history",
+          "get_statement"
+        ],
+        "tools": ["account_database", "transaction_api"],
+        "security_level": "high",
+        "authentication_required": true
+      }
+    },
+    {
+      "module": "TransactionAgentModule",
+      "config": {
+        "agentId": "transaction_agent",
+        "specialty": "transactions",
+        "systemPrompt": "You process financial transactions including transfers and bill payments. Always confirm transaction details and require authorization.",
+        "model": "pro",
+        "tasks": [
+          "transfer_funds",
+          "pay_bill",
+          "schedule_payment",
+          "cancel_transaction"
+        ],
+        "tools": ["payment_processor", "transfer_system", "bill_pay_api"],
+        "security_level": "critical",
+        "requires_confirmation": true
+      }
+    }
+  ],
+  "stateManagement": {
+    "storageType": "long_term",
+    "encryption_required": true,
+    "audit_logging": true
+  }
+}
+

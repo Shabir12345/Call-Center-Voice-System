@@ -1842,6 +1842,810 @@ def apply_template(template_id: str, customizations: Dict = None) -> AppConfig:
 
 ---
 
+### Scenario 4: Multi-Step Task with Multiple Sub-Agents
+
+**Caller**: "I want to book a room for next weekend, but I need to check my loyalty points first"
+
+**Step 1 - Master Agent Processing**:
+- Recognizes two intents: "check_loyalty_points" and "book_room"
+- Determines sequential execution needed
+
+**Step 2 - Master to Loyalty Sub-Agent**:
+```json
+{
+  "task": "check_loyalty_points",
+  "parameters": {
+    "user_id": "user_789"
+  },
+  "context": {...},
+  "requestId": "req_007"
+}
+```
+
+**Step 3 - Loyalty Sub-Agent Response**:
+```json
+{
+  "status": "success",
+  "data": {
+    "points": 5000,
+    "tier": "gold",
+    "points_value_usd": 50.00,
+    "expiration_date": "2025-12-31"
+  },
+  "requestId": "req_007"
+}
+```
+
+**Step 4 - Master to Caller (Intermediate)**:
+"You have 5,000 loyalty points worth $50.00. Your points expire on December 31st, 2025. Now, let me help you book a room for next weekend. What dates are you looking for?"
+
+**Step 5 - Caller Response**:
+"December 6th to 8th, and I'd like to use my points"
+
+**Step 6 - Master to Reservation Sub-Agent**:
+```json
+{
+  "task": "book_room",
+  "parameters": {
+    "check_in": "2025-12-06",
+    "check_out": "2025-12-08",
+    "user_id": "user_789",
+    "use_loyalty_points": true,
+    "available_points": 5000
+  },
+  "context": {
+    "previousTaskResults": {
+      "loyalty_points": {
+        "points": 5000,
+        "value_usd": 50.00
+      }
+    }
+  },
+  "requestId": "req_008"
+}
+```
+
+**Step 7 - Reservation Sub-Agent Response**:
+```json
+{
+  "status": "success",
+  "data": {
+    "reservation": {
+      "number": "XYZ789",
+      "check_in": "2025-12-06",
+      "check_out": "2025-12-08",
+      "room_type": "Standard Room",
+      "total_cost": 200.00,
+      "points_used": 5000,
+      "points_discount": 50.00,
+      "final_cost": 150.00,
+      "payment_method": "credit_card"
+    }
+  },
+  "requestId": "req_008"
+}
+```
+
+**Step 8 - Master to Caller (Final)**:
+"Perfect! I've booked a Standard Room for December 6th through 8th. I've applied your 5,000 loyalty points, which gives you a $50.00 discount. Your total is $150.00. Your reservation number is XYZ789. Would you like me to send a confirmation email?"
+
+---
+
+### Scenario 5: Session Resumption After Disconnection
+
+**Context**: User was in the middle of a conversation, connection dropped, user reconnects
+
+**Step 1 - User Reconnects**:
+- System detects returning session ID
+- Master agent retrieves session state
+
+**Step 2 - Master Agent State Retrieval**:
+```json
+{
+  "sessionId": "session_456",
+  "lastActivity": 1234567890000,
+  "conversationHistory": [
+    {"role": "caller", "content": "I want to modify my reservation"},
+    {"role": "agent", "content": "Which reservation would you like to modify?"},
+    {"role": "caller", "content": "The one for December 1st"}
+  ],
+  "pendingAction": {
+    "task": "modify_reservation",
+    "status": "awaiting_confirmation",
+    "parameters": {
+      "reservation_number": "ABC123",
+      "modification_type": "date_change"
+    }
+  }
+}
+```
+
+**Step 3 - Master to Caller (Resumption)**:
+"Welcome back! I see you were in the process of modifying your reservation for December 1st. Would you like to continue with that, or is there something else I can help you with?"
+
+**Step 4 - Caller Response**:
+"Yes, let's continue. I want to change it to December 15th"
+
+**Step 5 - Master to Sub-Agent (With Full Context)**:
+```json
+{
+  "task": "modify_reservation",
+  "parameters": {
+    "reservation_number": "ABC123",
+    "new_check_in": "2025-12-15",
+    "new_check_out": "2025-12-19"
+  },
+  "context": {
+    "threadId": "thread_123",
+    "sessionId": "session_456",
+    "resumedSession": true,
+    "conversationHistory": [...previous history...]
+  },
+  "requestId": "req_009"
+}
+```
+
+**Step 6 - Sub-Agent Response**:
+```json
+{
+  "status": "success",
+  "data": {
+    "reservation": {
+      "number": "ABC123",
+      "old_dates": {"check_in": "2025-12-01", "check_out": "2025-12-05"},
+      "new_dates": {"check_in": "2025-12-15", "check_out": "2025-12-19"},
+      "status": "modified",
+      "change_fee": 0.00
+    }
+  },
+  "requestId": "req_009"
+}
+```
+
+**Step 7 - Master to Caller (Final)**:
+"Great! I've successfully changed your reservation dates from December 1st-5th to December 15th-19th. There's no change fee for this modification. Your updated reservation number is still ABC123. Is there anything else?"
+
+---
+
+### Scenario 6: Complex Query Requiring Multiple Sub-Agents
+
+**Caller**: "I need to know if I can get a refund for my cancelled flight and how much it will cost to rebook"
+
+**Step 1 - Master Agent Processing**:
+- Identifies two related tasks: "check_refund_eligibility" and "get_rebooking_cost"
+- Determines parallel execution possible
+
+**Step 2 - Master to Refund Sub-Agent**:
+```json
+{
+  "task": "check_refund_eligibility",
+  "parameters": {
+    "booking_number": "FLT123",
+    "user_id": "user_789",
+    "cancellation_date": "2025-01-15"
+  },
+  "context": {...},
+  "requestId": "req_010"
+}
+```
+
+**Step 3 - Master to Pricing Sub-Agent (Parallel)**:
+```json
+{
+  "task": "get_rebooking_cost",
+  "parameters": {
+    "original_route": {"from": "NYC", "to": "LAX"},
+    "original_date": "2025-01-20",
+    "new_date": "2025-01-25"
+  },
+  "context": {...},
+  "requestId": "req_011"
+}
+```
+
+**Step 4 - Refund Sub-Agent Response**:
+```json
+{
+  "status": "success",
+  "data": {
+    "eligible": true,
+    "refund_amount": 350.00,
+    "refund_type": "partial",
+    "processing_time": "7-10 business days",
+    "reason": "Cancelled within 24 hours of booking"
+  },
+  "requestId": "req_010"
+}
+```
+
+**Step 5 - Pricing Sub-Agent Response**:
+```json
+{
+  "status": "success",
+  "data": {
+    "rebooking_cost": 425.00,
+    "price_difference": 75.00,
+    "available_flights": [
+      {"flight": "AA123", "departure": "2025-01-25T08:00", "price": 425.00},
+      {"flight": "AA456", "departure": "2025-01-25T14:00", "price": 450.00}
+    ]
+  },
+  "requestId": "req_011"
+}
+```
+
+**Step 6 - Master Agent Aggregation**:
+- Combines results from both sub-agents
+- Calculates net cost: $425.00 (rebooking) - $350.00 (refund) = $75.00 additional
+
+**Step 7 - Master to Caller (Final)**:
+"Good news! You're eligible for a partial refund of $350.00, which will be processed within 7-10 business days. For rebooking on January 25th, the cost would be $425.00. After your refund, you'd pay an additional $75.00. I have two flight options available: one at 8:00 AM for $425.00, or one at 2:00 PM for $450.00. Would you like to proceed with the rebooking?"
+
+---
+
+### Scenario 7: Error Recovery with Alternative Path
+
+**Caller**: "Show me my order history"
+
+**Step 1 - Master to Order Sub-Agent**:
+```json
+{
+  "task": "get_order_history",
+  "parameters": {
+    "user_id": "user_789",
+    "limit": 10
+  },
+  "context": {...},
+  "requestId": "req_012"
+}
+```
+
+**Step 2 - Order Sub-Agent Attempts Database Query**:
+- Primary database connection fails
+- Sub-agent attempts retry (fails again)
+
+**Step 3 - Order Sub-Agent Response (Error)**:
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "DATABASE_ERROR",
+    "message": "Unable to connect to primary database",
+    "details": {
+      "error_type": "ConnectionTimeout",
+      "retryable": true,
+      "suggested_fallback": "cache_or_secondary_db"
+    },
+    "retryable": true
+  },
+  "requestId": "req_012"
+}
+```
+
+**Step 4 - Master Agent Fallback Strategy**:
+- Detects database error
+- Checks for cached order data in session
+- Finds partial cache from earlier interaction
+- Routes to backup data source
+
+**Step 5 - Master to Order Sub-Agent (Fallback)**:
+```json
+{
+  "task": "get_order_history",
+  "parameters": {
+    "user_id": "user_789",
+    "limit": 10,
+    "use_cache": true,
+    "fallback_source": "secondary_db"
+  },
+  "context": {...},
+  "requestId": "req_013"
+}
+```
+
+**Step 6 - Order Sub-Agent Response (Partial Success)**:
+```json
+{
+  "status": "partial",
+  "data": {
+    "orders": [
+      {"id": "ORD001", "date": "2025-01-10", "total": 99.99},
+      {"id": "ORD002", "date": "2025-01-05", "total": 149.50}
+    ],
+    "total_count": 2,
+    "note": "Showing cached data. Some recent orders may not be visible."
+  },
+  "metadata": {
+    "source": "cache",
+    "data_freshness": "5 minutes old"
+  },
+  "requestId": "req_013"
+}
+```
+
+**Step 7 - Master to Caller (With Transparency)**:
+"I'm showing you your recent orders from our cached data. You have 2 orders: Order ORD001 from January 10th for $99.99, and Order ORD002 from January 5th for $149.50. Note that this information is about 5 minutes old, so any very recent orders might not appear yet. Would you like me to try refreshing this information, or can I help you with something specific about these orders?"
+
+---
+
+## Configuration Templates
+
+### Template 1: Hospitality/Hotel Management
+
+**Use Case**: Hotel reservation and concierge services
+
+**Configuration**:
+```json
+{
+  "template_id": "hospitality_hotel_v1",
+  "name": "Hotel Management System",
+  "description": "Complete hotel reservation and concierge management",
+  "version": "1.0",
+  
+  "master_agent": {
+    "agent_id": "hotel_master",
+    "system_prompt": "You are a friendly and professional hotel concierge. You help guests with reservations, modifications, cancellations, and general inquiries. Always be courteous and helpful.",
+    "voice_settings": {
+      "speed": 1.0,
+      "tone": "welcoming",
+      "language": "en",
+      "interruptible": true
+    },
+    "intents": [
+      "book_room",
+      "modify_reservation",
+      "cancel_reservation",
+      "confirm_reservation",
+      "check_in",
+      "check_out",
+      "request_service",
+      "get_recommendations"
+    ],
+    "guardrails": {
+      "banned_phrases": [],
+      "fallback_response": "I apologize, but I'm having trouble understanding. Could you please rephrase that?"
+    }
+  },
+  
+  "sub_agents": [
+    {
+      "agent_id": "reservation_agent",
+      "specialty": "reservations",
+      "system_prompt": "You are a reservation specialist. You handle booking, modification, and cancellation of hotel reservations. Always verify guest information and confirm all details.",
+      "model": "pro",
+      "tasks": [
+        "book_room",
+        "modify_reservation",
+        "cancel_reservation",
+        "confirm_reservation",
+        "check_availability"
+      ],
+      "tools": ["reservation_database", "availability_checker", "pricing_engine"],
+      "business_rules": {
+        "cancellation_policy": {
+          "free_cancellation_hours": 48,
+          "partial_refund_hours": 24,
+          "no_refund_hours": 0
+        },
+        "modification_policy": {
+          "free_modification_hours": 72,
+          "change_fee": 25.00
+        }
+      },
+      "bidirectional_enabled": true,
+      "max_conversation_depth": 3
+    },
+    {
+      "agent_id": "concierge_agent",
+      "specialty": "concierge",
+      "system_prompt": "You are a hotel concierge. You help guests with local recommendations, service requests, and general inquiries about the hotel and area.",
+      "model": "flash",
+      "tasks": [
+        "request_service",
+        "get_recommendations",
+        "get_local_info",
+        "schedule_service"
+      ],
+      "tools": ["local_database", "service_scheduler", "recommendation_engine"],
+      "bidirectional_enabled": true
+    },
+    {
+      "agent_id": "loyalty_agent",
+      "specialty": "loyalty_program",
+      "system_prompt": "You manage the hotel loyalty program. You check points, process redemptions, and explain benefits.",
+      "model": "flash",
+      "tasks": [
+        "check_loyalty_points",
+        "redeem_points",
+        "check_tier_status",
+        "explain_benefits"
+      ],
+      "tools": ["loyalty_database", "points_calculator"]
+    }
+  ],
+  
+  "communication_config": {
+    "timeout": {
+      "sub_agent_loop": 30000,
+      "tool_execution": 10000
+    },
+    "retry": {
+      "enabled": true,
+      "max_retries": 2,
+      "initial_delay": 1000,
+      "max_delay": 5000
+    }
+  },
+  
+  "state_management": {
+    "storage_type": "session",
+    "session_timeout": 3600000,
+    "max_history_size": 20
+  }
+}
+```
+
+### Template 2: Travel/Airline Management
+
+**Use Case**: Flight booking and travel services
+
+**Configuration**:
+```json
+{
+  "template_id": "travel_airline_v1",
+  "name": "Airline Booking System",
+  "description": "Flight booking, modifications, and travel services",
+  "version": "1.0",
+  
+  "master_agent": {
+    "agent_id": "airline_master",
+    "system_prompt": "You are an efficient airline booking assistant. You help customers book flights, manage reservations, check flight status, and handle travel-related inquiries. Be clear and concise.",
+    "voice_settings": {
+      "speed": 1.1,
+      "tone": "efficient",
+      "language": "en"
+    },
+    "intents": [
+      "search_flights",
+      "book_flight",
+      "modify_booking",
+      "cancel_booking",
+      "check_in",
+      "get_flight_status",
+      "request_assistance",
+      "upgrade_seat"
+    ]
+  },
+  
+  "sub_agents": [
+    {
+      "agent_id": "booking_agent",
+      "specialty": "flight_booking",
+      "system_prompt": "You handle flight searches, bookings, and modifications. Always verify travel dates, passenger information, and preferences.",
+      "model": "pro",
+      "tasks": [
+        "search_flights",
+        "book_flight",
+        "modify_booking",
+        "cancel_booking",
+        "get_booking_details"
+      ],
+      "tools": ["flight_search_api", "booking_system", "seat_map"],
+      "business_rules": {
+        "booking_policy": {
+          "hold_time_minutes": 15,
+          "payment_required": true
+        },
+        "cancellation_policy": {
+          "refundable_ticket_hours": 24,
+          "non_refundable_fee": 200.00
+        }
+      }
+    },
+    {
+      "agent_id": "flight_status_agent",
+      "specialty": "flight_information",
+      "system_prompt": "You provide real-time flight status information, gate changes, and delay notifications.",
+      "model": "flash",
+      "tasks": [
+        "get_flight_status",
+        "check_delays",
+        "get_gate_info"
+      ],
+      "tools": ["flight_status_api", "airport_database"]
+    },
+    {
+      "agent_id": "loyalty_agent",
+      "specialty": "frequent_flyer",
+      "system_prompt": "You manage frequent flyer accounts, miles, and upgrades.",
+      "model": "flash",
+      "tasks": [
+        "check_miles",
+        "redeem_miles",
+        "request_upgrade",
+        "check_elite_status"
+      ],
+      "tools": ["loyalty_database", "upgrade_engine"]
+    }
+  ],
+  
+  "communication_config": {
+    "timeout": {
+      "sub_agent_loop": 45000,
+      "tool_execution": 15000
+    },
+    "retry": {
+      "enabled": true,
+      "max_retries": 3,
+      "initial_delay": 2000
+    }
+  }
+}
+```
+
+### Template 3: E-Commerce Customer Service
+
+**Use Case**: Online shopping support and order management
+
+**Configuration**:
+```json
+{
+  "template_id": "ecommerce_support_v1",
+  "name": "E-Commerce Customer Service",
+  "description": "Order management, product inquiries, and customer support",
+  "version": "1.0",
+  
+  "master_agent": {
+    "agent_id": "ecommerce_master",
+    "system_prompt": "You are a helpful e-commerce customer service representative. You assist customers with orders, products, returns, and general inquiries. Be friendly and solution-oriented.",
+    "voice_settings": {
+      "speed": 1.0,
+      "tone": "friendly",
+      "language": "en"
+    },
+    "intents": [
+      "track_order",
+      "check_order_status",
+      "return_item",
+      "get_product_info",
+      "process_refund",
+      "update_shipping",
+      "apply_promo_code",
+      "get_recommendations"
+    ]
+  },
+  
+  "sub_agents": [
+    {
+      "agent_id": "order_agent",
+      "specialty": "order_management",
+      "system_prompt": "You handle order inquiries, tracking, and status updates. Always provide accurate shipping information and delivery estimates.",
+      "model": "pro",
+      "tasks": [
+        "track_order",
+        "check_order_status",
+        "get_order_history",
+        "update_shipping_address",
+        "cancel_order"
+      ],
+      "tools": ["order_database", "shipping_api", "inventory_system"],
+      "business_rules": {
+        "return_policy": {
+          "return_window_days": 30,
+          "free_return_threshold": 50.00
+        }
+      }
+    },
+    {
+      "agent_id": "product_agent",
+      "specialty": "product_information",
+      "system_prompt": "You provide detailed product information, availability, and recommendations.",
+      "model": "flash",
+      "tasks": [
+        "get_product_info",
+        "check_availability",
+        "get_recommendations",
+        "compare_products"
+      ],
+      "tools": ["product_catalog", "inventory_api", "recommendation_engine"]
+    },
+    {
+      "agent_id": "returns_agent",
+      "specialty": "returns_refunds",
+      "system_prompt": "You process returns, refunds, and exchanges. Always verify return eligibility and explain the process clearly.",
+      "model": "pro",
+      "tasks": [
+        "return_item",
+        "process_refund",
+        "initiate_exchange",
+        "check_return_status"
+      ],
+      "tools": ["returns_system", "payment_processor", "inventory_system"]
+    }
+  ]
+}
+```
+
+### Template 4: Healthcare Appointment System
+
+**Use Case**: Medical appointment scheduling and patient inquiries
+
+**Configuration**:
+```json
+{
+  "template_id": "healthcare_appointments_v1",
+  "name": "Healthcare Appointment System",
+  "description": "Medical appointment scheduling and patient information",
+  "version": "1.0",
+  
+  "master_agent": {
+    "agent_id": "healthcare_master",
+    "system_prompt": "You are a professional medical appointment scheduler. You help patients schedule, modify, and cancel appointments. Always maintain patient privacy and be empathetic.",
+    "voice_settings": {
+      "speed": 0.9,
+      "tone": "professional_caring",
+      "language": "en"
+    },
+    "intents": [
+      "schedule_appointment",
+      "modify_appointment",
+      "cancel_appointment",
+      "check_appointment",
+      "get_doctor_info",
+      "request_prescription_refill"
+    ],
+    "guardrails": {
+      "banned_phrases": [],
+      "privacy_required": true,
+      "hipaa_compliant": true
+    }
+  },
+  
+  "sub_agents": [
+    {
+      "agent_id": "appointment_agent",
+      "specialty": "appointment_scheduling",
+      "system_prompt": "You schedule medical appointments. Verify patient information, preferred dates, and reason for visit. Always confirm appointment details.",
+      "model": "pro",
+      "tasks": [
+        "schedule_appointment",
+        "modify_appointment",
+        "cancel_appointment",
+        "check_appointment",
+        "get_availability"
+      ],
+      "tools": ["appointment_system", "doctor_schedule", "patient_database"],
+      "business_rules": {
+        "cancellation_policy": {
+          "advance_notice_hours": 24,
+          "late_cancellation_fee": 25.00
+        },
+        "appointment_types": [
+          "general_checkup",
+          "specialist_consultation",
+          "follow_up",
+          "urgent_care"
+        ]
+      },
+      "bidirectional_enabled": true
+    },
+    {
+      "agent_id": "patient_info_agent",
+      "specialty": "patient_information",
+      "system_prompt": "You provide general patient information while maintaining HIPAA compliance. Only share information the patient is authorized to access.",
+      "model": "flash",
+      "tasks": [
+        "get_doctor_info",
+        "get_facility_info",
+        "check_insurance",
+        "get_directions"
+      ],
+      "tools": ["doctor_directory", "facility_database", "insurance_verifier"],
+      "privacy_level": "high"
+    }
+  ],
+  
+  "state_management": {
+    "storage_type": "long_term",
+    "encryption_required": true,
+    "hipaa_compliant": true
+  }
+}
+```
+
+### Template 5: Financial Services Support
+
+**Use Case**: Banking and financial account inquiries
+
+**Configuration**:
+```json
+{
+  "template_id": "financial_services_v1",
+  "name": "Financial Services Support",
+  "description": "Banking account management and financial inquiries",
+  "version": "1.0",
+  
+  "master_agent": {
+    "agent_id": "financial_master",
+    "system_prompt": "You are a secure banking assistant. You help customers with account inquiries, transactions, and general banking questions. Always verify identity and maintain security.",
+    "voice_settings": {
+      "speed": 1.0,
+      "tone": "professional_secure",
+      "language": "en"
+    },
+    "intents": [
+      "check_balance",
+      "get_transaction_history",
+      "transfer_funds",
+      "pay_bill",
+      "get_account_info",
+      "report_fraud"
+    ],
+    "guardrails": {
+      "security_required": true,
+      "authentication_required": true,
+      "pci_compliant": true
+    }
+  },
+  
+  "sub_agents": [
+    {
+      "agent_id": "account_agent",
+      "specialty": "account_management",
+      "system_prompt": "You handle account inquiries and balance checks. Always verify customer identity before providing sensitive information.",
+      "model": "pro",
+      "tasks": [
+        "check_balance",
+        "get_account_info",
+        "get_transaction_history",
+        "get_statement"
+      ],
+      "tools": ["account_database", "transaction_api"],
+      "security_level": "high",
+      "authentication_required": true
+    },
+    {
+      "agent_id": "transaction_agent",
+      "specialty": "transactions",
+      "system_prompt": "You process financial transactions including transfers and bill payments. Always confirm transaction details and require authorization.",
+      "model": "pro",
+      "tasks": [
+        "transfer_funds",
+        "pay_bill",
+        "schedule_payment",
+        "cancel_transaction"
+      ],
+      "tools": ["payment_processor", "transfer_system", "bill_pay_api"],
+      "security_level": "critical",
+      "requires_confirmation": true
+    },
+    {
+      "agent_id": "security_agent",
+      "specialty": "security_fraud",
+      "system_prompt": "You handle security concerns and fraud reports. Escalate immediately for suspicious activity.",
+      "model": "pro",
+      "tasks": [
+        "report_fraud",
+        "freeze_account",
+        "report_suspicious_activity",
+        "update_security_settings"
+      ],
+      "tools": ["fraud_detection", "security_system"],
+      "security_level": "critical",
+      "escalation_required": true
+    }
+  ],
+  
+  "state_management": {
+    "storage_type": "long_term",
+    "encryption_required": true,
+    "audit_logging": true
+  }
+}
+```
+
+---
+
 ## Testing and Best Practices
 
 ### Testing Strategy
@@ -2113,7 +2917,390 @@ The architecture can be implemented using frameworks like:
 
 ---
 
-**Document Version**: 1.0  
+## Implementation Todo List
+
+### Phase 1: Foundation & Core Infrastructure (Weeks 1-2)
+
+#### 1.1 Project Setup
+- [ ] Initialize project structure (TypeScript/React or Python)
+- [ ] Set up development environment and dependencies
+- [ ] Configure build tools and testing framework
+- [ ] Set up version control and branching strategy
+- [ ] Create initial project documentation structure
+
+#### 1.2 Core Type Definitions
+- [ ] Define `AgentMessage` interface with all required fields
+- [ ] Define `ConversationContext` interface
+- [ ] Define `ConversationThread` interface
+- [ ] Define `CommunicationEvent` interface
+- [ ] Define input/output schemas for master-sub-agent communication
+- [ ] Define error response structures
+- [ ] Create TypeScript types file (or Python dataclasses)
+
+#### 1.3 Communication Protocols
+- [ ] Implement `MessageType` enum (INFORM, QUERY, REQUEST, CONFIRM, CLARIFY)
+- [ ] Implement `validateProtocol()` function
+- [ ] Implement `createMessage()` function
+- [ ] Implement `createResponse()` function
+- [ ] Implement `createClarification()` function
+- [ ] Implement `MessageRouter` class
+- [ ] Write unit tests for protocol functions
+
+#### 1.4 Communication Manager
+- [ ] Implement `CommunicationManager` class
+- [ ] Implement message queue with priority sorting
+- [ ] Implement pending request tracking
+- [ ] Implement conversation thread management
+- [ ] Implement `sendMessage()` method (fire-and-forget)
+- [ ] Implement `sendAndWait()` method (request-response)
+- [ ] Implement `handleResponse()` method
+- [ ] Implement retry logic with exponential backoff
+- [ ] Implement timeout handling
+- [ ] Implement event emission system
+- [ ] Write unit tests for CommunicationManager
+
+### Phase 2: State Management & Logging (Weeks 3-4)
+
+#### 2.1 State Manager
+- [ ] Implement `Session` class
+- [ ] Implement `ConversationContext` class
+- [ ] Implement `StateManager` class
+- [ ] Implement session creation and retrieval
+- [ ] Implement session expiration handling
+- [ ] Implement conversation history management
+- [ ] Implement history size limiting
+- [ ] Implement ephemeral storage (in-memory)
+- [ ] Implement session-based storage
+- [ ] Implement long-term storage interface (database)
+- [ ] Write unit tests for StateManager
+
+#### 2.2 Logger
+- [ ] Implement `LogEntry` interface/class
+- [ ] Implement `CentralLogger` class
+- [ ] Implement log entry creation
+- [ ] Implement log querying with filters
+- [ ] Implement log level management (debug, info, warn, error)
+- [ ] Implement in-memory log storage with size limits
+- [ ] Implement persistent log storage interface
+- [ ] Implement log export functionality
+- [ ] Write unit tests for Logger
+
+#### 2.3 Validator
+- [ ] Implement input validation functions
+- [ ] Implement output validation functions
+- [ ] Implement schema validation (JSON Schema or Pydantic)
+- [ ] Implement data type checking
+- [ ] Implement constraint validation
+- [ ] Implement input sanitization
+- [ ] Write unit tests for Validator
+
+### Phase 3: Master Agent Implementation (Weeks 5-6)
+
+#### 3.1 Master Agent Core
+- [ ] Implement `MasterAgent` class
+- [ ] Implement caller input parsing
+- [ ] Implement intent recognition
+- [ ] Implement sub-agent routing logic
+- [ ] Implement structured input building
+- [ ] Implement response formatting for callers
+- [ ] Implement error message formatting
+- [ ] Implement clarification question formatting
+- [ ] Write unit tests for MasterAgent
+
+#### 3.2 Master Agent Features
+- [ ] Implement conversation flow management
+- [ ] Implement greeting handling
+- [ ] Implement context maintenance
+- [ ] Implement session resumption
+- [ ] Implement guardrails and safety filters
+- [ ] Implement voice settings application
+- [ ] Implement user preference application
+- [ ] Write integration tests for MasterAgent
+
+#### 3.3 Intent Recognition
+- [ ] Implement intent extraction from natural language
+- [ ] Implement parameter extraction
+- [ ] Implement context-aware intent resolution
+- [ ] Implement intent-to-agent mapping
+- [ ] Write unit tests for intent recognition
+
+### Phase 4: Sub-Agent Implementation (Weeks 7-8)
+
+#### 4.1 Sub-Agent Base
+- [ ] Implement `SubAgentModule` base class
+- [ ] Implement task processing interface
+- [ ] Implement input validation
+- [ ] Implement output validation
+- [ ] Implement error handling
+- [ ] Implement bidirectional communication support
+- [ ] Write unit tests for SubAgentModule
+
+#### 4.2 Sub-Agent Types
+- [ ] Implement `ReservationAgentModule` (example)
+- [ ] Implement `BillingAgentModule` (example)
+- [ ] Implement `SupportAgentModule` (example)
+- [ ] Implement data retrieval agent pattern
+- [ ] Implement action agent pattern
+- [ ] Implement validation agent pattern
+- [ ] Implement calculation agent pattern
+- [ ] Write unit tests for each agent type
+
+#### 4.3 Sub-Agent Features
+- [ ] Implement business rules application
+- [ ] Implement external system integration
+- [ ] Implement clarification request generation
+- [ ] Implement missing data detection
+- [ ] Implement retry logic for external calls
+- [ ] Write integration tests for Sub-Agents
+
+### Phase 5: Error Handling & Reliability (Weeks 9-10)
+
+#### 5.1 Error Categories
+- [ ] Implement error code definitions
+- [ ] Implement error categorization (retryable vs non-retryable)
+- [ ] Implement error response formatting
+- [ ] Implement user-friendly error messages
+- [ ] Write unit tests for error handling
+
+#### 5.2 Retry Logic
+- [ ] Implement retry configuration
+- [ ] Implement exponential backoff calculation
+- [ ] Implement retry decision logic
+- [ ] Implement retry tracking
+- [ ] Implement max retry limits
+- [ ] Write unit tests for retry logic
+
+#### 5.3 Timeout Management
+- [ ] Implement timeout configuration
+- [ ] Implement task-specific timeouts
+- [ ] Implement agent-specific timeouts
+- [ ] Implement timeout handling
+- [ ] Implement timeout error responses
+- [ ] Write unit tests for timeout handling
+
+#### 5.4 Fallback Strategies
+- [ ] Implement cached data fallback
+- [ ] Implement alternative agent fallback
+- [ ] Implement degraded mode
+- [ ] Implement human escalation
+- [ ] Implement fallback chain execution
+- [ ] Write integration tests for fallback strategies
+
+### Phase 6: Customization & Configuration (Weeks 11-12)
+
+#### 6.1 User Customization
+- [ ] Implement `UserProfile` class
+- [ ] Implement preference storage and retrieval
+- [ ] Implement preference application to context
+- [ ] Implement access level management
+- [ ] Implement language preference handling
+- [ ] Write unit tests for UserProfile
+
+#### 6.2 App Variant System
+- [ ] Implement app variant configuration structure
+- [ ] Implement variant loading
+- [ ] Implement variant validation
+- [ ] Implement template system
+- [ ] Implement template application
+- [ ] Implement template customization
+- [ ] Write unit tests for variant system
+
+#### 6.3 Configuration Templates
+- [ ] Create hospitality/hotel template
+- [ ] Create travel/airline template
+- [ ] Create e-commerce template
+- [ ] Create healthcare template
+- [ ] Create financial services template
+- [ ] Validate all templates
+- [ ] Document template usage
+
+#### 6.4 Dynamic Agent Configuration
+- [ ] Implement agent module loading
+- [ ] Implement agent registration system
+- [ ] Implement agent discovery
+- [ ] Implement runtime agent addition
+- [ ] Write unit tests for dynamic configuration
+
+### Phase 7: Integration & External Systems (Weeks 13-14)
+
+#### 7.1 Integration Node Support
+- [ ] Implement REST API integration
+- [ ] Implement GraphQL integration
+- [ ] Implement database integration
+- [ ] Implement authentication handling
+- [ ] Implement request/response transformation
+- [ ] Write unit tests for integrations
+
+#### 7.2 Tool Agent Implementation
+- [ ] Implement tool execution interface
+- [ ] Implement parameter validation for tools
+- [ ] Implement output schema validation
+- [ ] Implement success criteria checking
+- [ ] Implement tool error handling
+- [ ] Write unit tests for Tool Agents
+
+#### 7.3 External System Error Handling
+- [ ] Implement connection error handling
+- [ ] Implement rate limit handling
+- [ ] Implement authentication error handling
+- [ ] Implement timeout handling for external calls
+- [ ] Implement retry logic for external systems
+- [ ] Write integration tests
+
+### Phase 8: Testing & Quality Assurance (Weeks 15-16)
+
+#### 8.1 Unit Testing
+- [ ] Complete unit tests for all core components
+- [ ] Achieve >80% code coverage
+- [ ] Test all error paths
+- [ ] Test edge cases
+- [ ] Set up continuous integration
+
+#### 8.2 Integration Testing
+- [ ] Test master-sub-agent communication
+- [ ] Test multi-agent scenarios
+- [ ] Test error recovery flows
+- [ ] Test session resumption
+- [ ] Test concurrent requests
+- [ ] Test timeout scenarios
+
+#### 8.3 End-to-End Testing
+- [ ] Implement E2E test framework
+- [ ] Test complete user flows (all scenarios)
+- [ ] Test template configurations
+- [ ] Test customization features
+- [ ] Test performance under load
+- [ ] Test failure scenarios
+
+#### 8.4 Performance Testing
+- [ ] Implement performance benchmarks
+- [ ] Test latency requirements
+- [ ] Test throughput requirements
+- [ ] Test memory usage
+- [ ] Test concurrent session handling
+- [ ] Optimize bottlenecks
+
+### Phase 9: Documentation & Deployment (Weeks 17-18)
+
+#### 9.1 API Documentation
+- [ ] Document all public APIs
+- [ ] Create API reference documentation
+- [ ] Document configuration options
+- [ ] Document error codes and messages
+- [ ] Create code examples
+
+#### 9.2 User Documentation
+- [ ] Create getting started guide
+- [ ] Create configuration guide
+- [ ] Create template usage guide
+- [ ] Create troubleshooting guide
+- [ ] Create best practices guide
+
+#### 9.3 Developer Documentation
+- [ ] Document architecture decisions
+- [ ] Document extension points
+- [ ] Document testing strategies
+- [ ] Create developer onboarding guide
+- [ ] Document deployment procedures
+
+#### 9.4 Deployment
+- [ ] Set up production environment
+- [ ] Configure monitoring and alerting
+- [ ] Set up logging aggregation
+- [ ] Configure backup and recovery
+- [ ] Create deployment scripts
+- [ ] Perform security audit
+
+### Phase 10: Monitoring & Observability (Week 19)
+
+#### 10.1 Monitoring Setup
+- [ ] Implement metrics collection
+- [ ] Set up dashboards
+- [ ] Configure alerts
+- [ ] Set up log aggregation
+- [ ] Implement health checks
+
+#### 10.2 Observability
+- [ ] Implement distributed tracing
+- [ ] Implement request correlation IDs
+- [ ] Implement performance monitoring
+- [ ] Implement error tracking
+- [ ] Implement usage analytics
+
+### Phase 11: Optimization & Refinement (Week 20+)
+
+#### 11.1 Performance Optimization
+- [ ] Profile and optimize hot paths
+- [ ] Implement caching where appropriate
+- [ ] Optimize database queries
+- [ ] Optimize network calls
+- [ ] Reduce memory footprint
+
+#### 11.2 Code Quality
+- [ ] Code review and refactoring
+- [ ] Remove technical debt
+- [ ] Improve error messages
+- [ ] Enhance logging
+- [ ] Improve test coverage
+
+#### 11.3 Feature Enhancements
+- [ ] Implement additional templates
+- [ ] Add new agent types
+- [ ] Enhance customization options
+- [ ] Improve error recovery
+- [ ] Add new features based on feedback
+
+---
+
+## Implementation Priority
+
+### Critical Path (Must Have)
+1. Phase 1: Foundation & Core Infrastructure
+2. Phase 2: State Management & Logging
+3. Phase 3: Master Agent Implementation
+4. Phase 4: Sub-Agent Implementation
+5. Phase 5: Error Handling & Reliability
+
+### Important (Should Have)
+6. Phase 6: Customization & Configuration
+7. Phase 7: Integration & External Systems
+8. Phase 8: Testing & Quality Assurance
+
+### Nice to Have (Could Have)
+9. Phase 9: Documentation & Deployment
+10. Phase 10: Monitoring & Observability
+11. Phase 11: Optimization & Refinement
+
+---
+
+## Estimated Timeline
+
+- **Minimum Viable Product (MVP)**: 12-14 weeks (Phases 1-5)
+- **Full Implementation**: 20 weeks (All phases)
+- **Production Ready**: 22-24 weeks (including refinement)
+
+---
+
+## Resource Requirements
+
+### Development Team
+- 1-2 Backend Engineers (TypeScript/Python)
+- 1 Frontend Engineer (if UI needed)
+- 1 DevOps Engineer (for deployment)
+- 1 QA Engineer (for testing)
+
+### Infrastructure
+- Development environment
+- Testing environment
+- Staging environment
+- Production environment
+- Database (PostgreSQL/Redis)
+- Monitoring tools
+- Logging infrastructure
+
+---
+
+**Document Version**: 1.1  
 **Last Updated**: 2025-01-27  
 **Author**: AI System Architect
 
