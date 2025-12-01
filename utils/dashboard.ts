@@ -49,6 +49,21 @@ export interface DashboardData {
 }
 
 /**
+ * Dashboard update event types
+ */
+export type DashboardEventType = 'dataUpdate' | 'performanceChange' | 'healthChange' | 'alert' | 'anomaly' | '*';
+
+/**
+ * Dashboard update event
+ */
+export interface DashboardUpdateEvent {
+  type: DashboardEventType;
+  data?: DashboardData;
+  timestamp: number;
+  metadata?: Record<string, any>;
+}
+
+/**
  * Dashboard Provider
  */
 export class DashboardProvider {
@@ -60,6 +75,12 @@ export class DashboardProvider {
   private logger: CentralLogger;
   private reliabilityTracker?: ReliabilityMetricsTracker;
   private anomalyDetector?: AnomalyDetector;
+  
+  // Event system
+  private eventCallbacks: Map<DashboardEventType, Set<(event: DashboardUpdateEvent) => void>> = new Map();
+  private updateInterval: NodeJS.Timeout | null = null;
+  private lastData: DashboardData | null = null;
+  private updateIntervalMs: number = 2000; // Default 2 seconds
 
   constructor(
     performanceMonitor: PerformanceMonitor,
@@ -69,7 +90,8 @@ export class DashboardProvider {
     alertManager: AlertManager,
     logger: CentralLogger,
     reliabilityTracker?: ReliabilityMetricsTracker,
-    anomalyDetector?: AnomalyDetector
+    anomalyDetector?: AnomalyDetector,
+    updateIntervalMs?: number
   ) {
     this.performanceMonitor = performanceMonitor;
     this.healthChecker = healthChecker;
@@ -79,6 +101,167 @@ export class DashboardProvider {
     this.logger = logger;
     this.reliabilityTracker = reliabilityTracker;
     this.anomalyDetector = anomalyDetector;
+    this.updateIntervalMs = updateIntervalMs || 2000;
+    
+    // Start automatic updates
+    this.startAutoUpdates();
+  }
+
+  /**
+   * Subscribe to dashboard updates
+   * @param eventType - Event type to subscribe to ('*' for all events)
+   * @param callback - Callback function
+   * @returns Unsubscribe function
+   */
+  on(eventType: DashboardEventType, callback: (event: DashboardUpdateEvent) => void): () => void {
+    if (!this.eventCallbacks.has(eventType)) {
+      this.eventCallbacks.set(eventType, new Set());
+    }
+    
+    this.eventCallbacks.get(eventType)!.add(callback);
+    
+    // Return unsubscribe function
+    return () => {
+      const callbacks = this.eventCallbacks.get(eventType);
+      if (callbacks) {
+        callbacks.delete(callback);
+        if (callbacks.size === 0) {
+          this.eventCallbacks.delete(eventType);
+        }
+      }
+    };
+  }
+
+  /**
+   * Emit dashboard update event
+   */
+  private emit(event: DashboardUpdateEvent): void {
+    // Emit to specific event type subscribers
+    const specificCallbacks = this.eventCallbacks.get(event.type);
+    if (specificCallbacks) {
+      specificCallbacks.forEach(cb => {
+        try {
+          cb(event);
+        } catch (error) {
+          this.logger.error('Error in dashboard event callback', { error, eventType: event.type });
+        }
+      });
+    }
+
+    // Emit to wildcard subscribers
+    const wildcardCallbacks = this.eventCallbacks.get('*');
+    if (wildcardCallbacks) {
+      wildcardCallbacks.forEach(cb => {
+        try {
+          cb(event);
+        } catch (error) {
+          this.logger.error('Error in dashboard wildcard event callback', { error });
+        }
+      });
+    }
+  }
+
+  /**
+   * Start automatic updates with event emission
+   */
+  private startAutoUpdates(): void {
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+    }
+
+    this.updateInterval = setInterval(async () => {
+      try {
+        const currentData = await this.getDashboardData();
+        
+        // Emit data update event
+        this.emit({
+          type: 'dataUpdate',
+          data: currentData,
+          timestamp: Date.now()
+        });
+
+        // Check for performance changes
+        if (this.lastData) {
+          const perfChanged = 
+            Math.abs(currentData.performance.responseTime.average - this.lastData.performance.responseTime.average) > 100 ||
+            Math.abs(currentData.performance.errorRate.percentage - this.lastData.performance.errorRate.percentage) > 1;
+          
+          if (perfChanged) {
+            this.emit({
+              type: 'performanceChange',
+              data: currentData,
+              timestamp: Date.now(),
+              metadata: {
+                previousAvgResponseTime: this.lastData.performance.responseTime.average,
+                currentAvgResponseTime: currentData.performance.responseTime.average,
+                previousErrorRate: this.lastData.performance.errorRate.percentage,
+                currentErrorRate: currentData.performance.errorRate.percentage
+              }
+            });
+          }
+
+          // Check for health changes
+          if (currentData.health.overall !== this.lastData.health.overall) {
+            this.emit({
+              type: 'healthChange',
+              data: currentData,
+              timestamp: Date.now(),
+              metadata: {
+                previousHealth: this.lastData.health.overall,
+                currentHealth: currentData.health.overall
+              }
+            });
+          }
+        }
+
+        // Check for new alerts
+        if (currentData.alerts.active > (this.lastData?.alerts.active || 0)) {
+          this.emit({
+            type: 'alert',
+            data: currentData,
+            timestamp: Date.now(),
+            metadata: {
+              alertCount: currentData.alerts.active,
+              criticalAlerts: currentData.alerts.critical
+            }
+          });
+        }
+
+        // Check for new anomalies
+        if (currentData.anomalies && currentData.anomalies.length > (this.lastData?.anomalies?.length || 0)) {
+          this.emit({
+            type: 'anomaly',
+            data: currentData,
+            timestamp: Date.now(),
+            metadata: {
+              anomalyCount: currentData.anomalies.length
+            }
+          });
+        }
+
+        this.lastData = currentData;
+      } catch (error) {
+        this.logger.error('Error in dashboard auto-update', { error });
+      }
+    }, this.updateIntervalMs);
+  }
+
+  /**
+   * Stop automatic updates
+   */
+  stopAutoUpdates(): void {
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+      this.updateInterval = null;
+    }
+  }
+
+  /**
+   * Set update interval
+   */
+  setUpdateInterval(intervalMs: number): void {
+    this.updateIntervalMs = intervalMs;
+    this.startAutoUpdates();
   }
 
   /**

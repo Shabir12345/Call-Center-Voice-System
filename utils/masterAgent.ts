@@ -42,6 +42,10 @@ export interface MasterAgentConfig {
   };
   bidirectionalEnabled?: boolean;
   communicationTimeout?: number;
+  // Optional callbacks for visual feedback
+  onSystemMessage?: (message: string) => void;
+  onAgentActive?: (agentId: string) => void;
+  onEdgeAnimate?: (source: string, target: string) => void;
 }
 
 /**
@@ -110,15 +114,50 @@ export class MasterAgent {
       // 3. Parse and extract intent
       const intentResult = await this.parseIntent(callerInput, session);
 
-      // 4. Apply guardrails
+      // 4. Check session memory for relevant data before querying sub-agents
+      const memoryCheck = this.checkSessionMemory(intentResult, session);
+      if (memoryCheck.found) {
+        // Use data from memory instead of querying sub-agent
+        this.logger.log({
+          type: 'memory_hit',
+          from: this.config.agentId,
+          message: `Using data from session memory for intent: ${intentResult.intent}`,
+          sessionId,
+          metadata: {
+            memoryKey: memoryCheck.memoryKey,
+            intent: intentResult.intent
+          }
+        });
+        return this.formatResponseFromMemory(memoryCheck.data, intentResult, session);
+      }
+
+      // 5. Apply guardrails
       const guardrailCheck = this.checkGuardrails(callerInput);
       if (!guardrailCheck.allowed) {
         return guardrailCheck.response || this.config.guardrails?.fallbackResponse || 
           "I'm sorry, I can't help with that. Is there something else I can assist you with?";
       }
 
-      // 5. Determine target sub-agent
+      // 6. Determine target sub-agent
       const targetAgent = this.determineAgent(intentResult.intent);
+      
+      // Emit system message when consulting sub-agent
+      if (targetAgent && this.config.onSystemMessage) {
+        // Try to get agent name from registry or config
+        const agentName = targetAgent; // Could be enhanced to get actual name
+        this.config.onSystemMessage(`🔵 Consulting ${agentName}...`);
+      }
+      
+      // Emit visual feedback
+      if (targetAgent) {
+        if (this.config.onAgentActive) {
+          this.config.onAgentActive(targetAgent);
+        }
+        if (this.config.onEdgeAnimate && this.config.agentId) {
+          this.config.onEdgeAnimate(this.config.agentId, targetAgent);
+        }
+      }
+      
       if (!targetAgent) {
         // For new sessions with unknown intent, combine greeting with clarification
         if (session.history.length === 1 && this.shouldGreetFirst()) {
@@ -170,10 +209,16 @@ export class MasterAgent {
       // 9. Process sub-agent response
       const formattedResponse = await this.processSubAgentResponse(
         response,
-        session
+        session,
+        intentResult
       );
 
-      // 10. Log agent response
+      // 10. Store important data in session memory if response was successful
+      if (response.status === 'success' && response.data) {
+        await this.storeInSessionMemory(response.data, intentResult, sessionId);
+      }
+
+      // 11. Log agent response
       this.logger.log({
         type: 'agent_to_caller',
         from: this.config.agentId,
@@ -216,7 +261,7 @@ export class MasterAgent {
     // In production, this would use NLP/ML models
     
     const lowerInput = input.toLowerCase();
-    const extractedParams = this.extractReservationParameters(input);
+    const extractedParams = this.extractReservationParameters(input, session);
 
     // Check if this looks like a continuation of a reservation confirmation
     // (has reservation number but no explicit reservation keyword)
@@ -253,6 +298,33 @@ export class MasterAgent {
           task: 'confirm_reservation',
           parameters: extractedParams,
           confidence: 0.9
+        };
+      }
+      // Check for follow-up questions about reservation details (room type, dates, price)
+      if (lowerInput.includes('room') && (lowerInput.includes('what kind') || lowerInput.includes('type') || lowerInput.includes('which'))) {
+        return {
+          intent: 'view_reservation_details',
+          task: 'view_reservation_details',
+          parameters: {},
+          confidence: 0.85
+        };
+      }
+      if ((lowerInput.includes('date') || lowerInput.includes('when') || lowerInput.includes('check-in') || lowerInput.includes('check-out')) && 
+          (lowerInput.includes('my') || lowerInput.includes('the') || lowerInput.includes('reservation'))) {
+        return {
+          intent: 'view_reservation_details',
+          task: 'view_reservation_details',
+          parameters: {},
+          confidence: 0.85
+        };
+      }
+      if ((lowerInput.includes('price') || lowerInput.includes('cost') || lowerInput.includes('amount') || lowerInput.includes('total')) && 
+          (lowerInput.includes('my') || lowerInput.includes('the') || lowerInput.includes('reservation'))) {
+        return {
+          intent: 'view_reservation_details',
+          task: 'view_reservation_details',
+          parameters: {},
+          confidence: 0.85
         };
       }
       if (lowerInput.includes('cancel')) {
@@ -308,8 +380,9 @@ export class MasterAgent {
 
   /**
    * Extract reservation parameters from input
+   * Enhanced to also check conversation history for missing parameters
    */
-  private extractReservationParameters(input: string): Record<string, any> {
+  private extractReservationParameters(input: string, session?: Session): Record<string, any> {
     const params: Record<string, any> = {};
 
     // Try to extract reservation number (6-character alphanumeric)
@@ -323,7 +396,8 @@ export class MasterAgent {
     const namePatterns = [
       /(?:name is|I'm|I am|called|my name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i,
       /(?:reservation for|under)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i,
-      /(?:and my name is|and the name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i
+      /(?:and my name is|and the name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i,
+      /(?:it's|it is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i
     ];
 
     for (const pattern of namePatterns) {
@@ -331,6 +405,40 @@ export class MasterAgent {
       if (match) {
         params.full_name = match[1];
         break;
+      }
+    }
+
+    // If we have a session, check conversation history for missing parameters
+    if (session) {
+      const recentHistory = session.getRecentHistory(10);
+      
+      // Look for reservation number in previous messages if not found in current input
+      if (!params.reservation_number) {
+        for (const entry of recentHistory) {
+          if (entry.role === 'caller') {
+            const histReservationMatch = entry.content.match(/\b([A-Z0-9]{6})\b/i);
+            if (histReservationMatch) {
+              params.reservation_number = histReservationMatch[1].toUpperCase();
+              break;
+            }
+          }
+        }
+      }
+
+      // Look for name in previous messages if not found in current input
+      if (!params.full_name) {
+        for (const entry of recentHistory) {
+          if (entry.role === 'caller') {
+            for (const pattern of namePatterns) {
+              const match = entry.content.match(pattern);
+              if (match) {
+                params.full_name = match[1];
+                break;
+              }
+            }
+            if (params.full_name) break;
+          }
+        }
       }
     }
 
@@ -396,6 +504,7 @@ export class MasterAgent {
     this.intentToAgentMap.set('modify_reservation', 'reservation_agent');
     this.intentToAgentMap.set('get_billing_info', 'billing_agent');
     this.intentToAgentMap.set('create_support_ticket', 'support_agent');
+    // Note: view_reservation_details is handled via memory, not routed to sub-agent
   }
 
   /**
@@ -440,7 +549,8 @@ export class MasterAgent {
    */
   private async processSubAgentResponse(
     response: any,
-    session: Session
+    session: Session,
+    intentResult?: IntentResult
   ): Promise<string> {
     // Validate response structure
     if (!response || typeof response !== 'object') {
@@ -475,6 +585,25 @@ export class MasterAgent {
       const res = data.reservation;
       return `Great! I've confirmed your reservation. You have a ${res.room_type || 'room'} reserved for ${res.date || 'your dates'}. ` +
         `Your reservation number is ${res.number}. Is there anything else I can help you with?`;
+    }
+
+    // Handle direct reservation data (from memory or direct response)
+    if (data.reservation_number || data.room_type) {
+      const res = data;
+      let message = '';
+      if (res.room_type) {
+        message += `You have a ${res.room_type} reserved. `;
+      }
+      if (res.check_in && res.check_out) {
+        const checkIn = new Date(res.check_in).toLocaleDateString();
+        const checkOut = new Date(res.check_out).toLocaleDateString();
+        message += `Check-in is on ${checkIn} and check-out is on ${checkOut}. `;
+      }
+      if (res.total_amount) {
+        message += `The total amount is ${res.currency || '$'}${res.total_amount}. `;
+      }
+      message += "Is there anything else you'd like to know?";
+      return message;
     }
 
     if (data.billing) {
@@ -672,6 +801,178 @@ export class MasterAgent {
         // Responses should be more detailed
       }
     }
+  }
+
+  /**
+   * Check session memory for relevant data based on intent
+   */
+  private checkSessionMemory(
+    intentResult: IntentResult,
+    session: Session
+  ): { found: boolean; data?: any; memoryKey?: string } {
+    const intent = intentResult.intent;
+    const memory = session.sessionMemory;
+
+    // Map intents to memory keys
+    const intentToMemoryKey: Record<string, string[]> = {
+      'confirm_reservation': ['reservation', 'reservation_data'],
+      'view_reservation_details': ['reservation', 'reservation_data'],
+      'cancel_reservation': ['reservation', 'reservation_data'],
+      'modify_reservation': ['reservation', 'reservation_data'],
+      'get_billing_info': ['billing', 'billing_data'],
+      'create_support_ticket': ['support', 'support_data']
+    };
+
+    const possibleKeys = intentToMemoryKey[intent] || [];
+    
+    // Check each possible key
+    for (const key of possibleKeys) {
+      if (session.hasInMemory(key)) {
+        const data = session.getFromMemory(key);
+        if (data && (typeof data === 'object' ? Object.keys(data).length > 0 : true)) {
+          return {
+            found: true,
+            data,
+            memoryKey: key
+          };
+        }
+      }
+    }
+
+    // Also check for reservation_number in parameters and look for matching reservation
+    if (intentResult.parameters?.reservation_number) {
+      const reservationNumber = intentResult.parameters.reservation_number;
+      
+      // Check if we have a reservation stored with this number
+      if (session.hasInMemory('reservation')) {
+        const reservation = session.getFromMemory('reservation');
+        if (reservation && 
+            (reservation.reservation_number === reservationNumber || 
+             reservation.number === reservationNumber)) {
+          return {
+            found: true,
+            data: reservation,
+            memoryKey: 'reservation'
+          };
+        }
+      }
+    }
+
+    return { found: false };
+  }
+
+  /**
+   * Store data in session memory after successful sub-agent response
+   */
+  private async storeInSessionMemory(
+    data: any,
+    intentResult: IntentResult,
+    sessionId: string
+  ): Promise<void> {
+    if (!data) return;
+
+    const intent = intentResult.intent;
+    const session = await this.stateManager.getOrCreateSession(sessionId);
+
+    // Determine memory key based on intent and data structure
+    let memoryKey: string;
+    let valueToStore: any;
+
+    if (intent.includes('reservation')) {
+      memoryKey = 'reservation';
+      // Store reservation data with timestamp
+      valueToStore = {
+        ...data.reservation || data,
+        retrievedAt: Date.now(),
+        intent: intent
+      };
+    } else if (intent.includes('billing')) {
+      memoryKey = 'billing';
+      valueToStore = {
+        ...data.billing || data,
+        retrievedAt: Date.now(),
+        intent: intent
+      };
+    } else if (intent.includes('support')) {
+      memoryKey = 'support';
+      valueToStore = {
+        ...data.support || data,
+        retrievedAt: Date.now(),
+        intent: intent
+      };
+    } else {
+      // Generic storage for other intents
+      memoryKey = `${intent}_data`;
+      valueToStore = {
+        ...data,
+        retrievedAt: Date.now(),
+        intent: intent
+      };
+    }
+
+    // Store in session memory
+    await this.stateManager.storeInSessionMemory(sessionId, memoryKey, valueToStore);
+
+    this.logger.log({
+      type: 'memory_stored',
+      from: this.config.agentId,
+      message: `Stored data in session memory for intent: ${intent}`,
+      sessionId,
+      metadata: {
+        memoryKey,
+        intent: intent
+      }
+    });
+  }
+
+  /**
+   * Format response from memory data
+   */
+  private formatResponseFromMemory(
+    memoryData: any,
+    intentResult: IntentResult,
+    session: Session
+  ): string {
+    const intent = intentResult.intent;
+
+    // Use the same formatting logic as formatSuccessMessage
+    if (intent.includes('reservation') || memoryData.reservation_number || memoryData.room_type) {
+      const res = memoryData.reservation || memoryData;
+      let message = '';
+
+      if (intent === 'view_reservation_details') {
+        // Detailed view of reservation
+        if (res.room_type) {
+          message += `You have a ${res.room_type} reserved. `;
+        }
+        if (res.check_in && res.check_out) {
+          const checkIn = new Date(res.check_in).toLocaleDateString();
+          const checkOut = new Date(res.check_out).toLocaleDateString();
+          message += `Check-in is on ${checkIn} and check-out is on ${checkOut}. `;
+        }
+        if (res.total_amount) {
+          message += `The total amount is ${res.currency || '$'}${res.total_amount}. `;
+        }
+        if (res.reservation_number || res.number) {
+          message += `Your reservation number is ${res.reservation_number || res.number}. `;
+        }
+        message += "Is there anything else you'd like to know?";
+      } else {
+        // Confirmation or other reservation intents
+        message = this.formatSuccessMessage(memoryData, session);
+      }
+
+      return message;
+    }
+
+    if (intent.includes('billing') || memoryData.billing) {
+      const bill = memoryData.billing || memoryData;
+      return `Your bill for ${bill.month || 'this month'} is $${bill.total_amount || 'N/A'}. ` +
+        `The payment is due by ${bill.due_date || 'the due date'}. Would you like me to help you make a payment?`;
+    }
+
+    // Generic response
+    return "I have that information. Is there anything else I can help you with?";
   }
 }
 

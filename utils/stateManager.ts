@@ -21,6 +21,17 @@ export interface HistoryEntry {
 /**
  * Session data structure
  */
+/**
+ * Session memory structure for storing important conversation data
+ */
+export interface SessionMemory {
+  [key: string]: any; // Flexible structure for different types of data
+  // Common patterns:
+  // reservation?: ReservationData;
+  // billing?: BillingData;
+  // customer?: CustomerData;
+}
+
 export class Session {
   id: string;
   created_at: number;
@@ -31,6 +42,7 @@ export class Session {
   history: HistoryEntry[];
   context: ConversationContext;
   metadata: Record<string, any>;
+  sessionMemory: SessionMemory; // Temporary memory for current call
   pending_requests: Map<string, any>;
   private maxHistorySize: number;
 
@@ -53,6 +65,7 @@ export class Session {
       language: 'en',
       timezone: 'UTC'
     };
+    this.sessionMemory = {}; // Initialize empty memory
     this.pending_requests = new Map();
     this.maxHistorySize = maxHistorySize;
   }
@@ -81,6 +94,47 @@ export class Session {
     this.updated_at = Date.now();
   }
 
+  /**
+   * Store data in session memory
+   */
+  storeInMemory(key: string, value: any): void {
+    this.sessionMemory[key] = value;
+    this.updated_at = Date.now();
+  }
+
+  /**
+   * Retrieve data from session memory
+   */
+  getFromMemory(key: string): any {
+    return this.sessionMemory[key];
+  }
+
+  /**
+   * Check if memory has a specific key
+   */
+  hasInMemory(key: string): boolean {
+    return key in this.sessionMemory && this.sessionMemory[key] !== undefined;
+  }
+
+  /**
+   * Clear specific memory entry or all memory
+   */
+  clearMemory(key?: string): void {
+    if (key) {
+      delete this.sessionMemory[key];
+    } else {
+      this.sessionMemory = {};
+    }
+    this.updated_at = Date.now();
+  }
+
+  /**
+   * Get all memory keys
+   */
+  getMemoryKeys(): string[] {
+    return Object.keys(this.sessionMemory);
+  }
+
   toJSON(): any {
     return {
       id: this.id,
@@ -91,7 +145,8 @@ export class Session {
       current_thread_id: this.current_thread_id,
       history: this.history,
       context: this.context,
-      metadata: this.metadata
+      metadata: this.metadata,
+      sessionMemory: this.sessionMemory
     };
   }
 
@@ -104,6 +159,7 @@ export class Session {
     session.history = data.history || [];
     session.context = data.context || session.context;
     session.metadata = data.metadata || session.metadata;
+    session.sessionMemory = data.sessionMemory || {};
     return session;
   }
 }
@@ -421,6 +477,56 @@ export class StateManager {
    */
   getActiveSessions(): Session[] {
     return Array.from(this.sessions.values()).filter(s => !s.isExpired());
+  }
+
+  /**
+   * Store data in session memory
+   */
+  async storeInSessionMemory(sessionId: string, key: string, value: any): Promise<void> {
+    const session = await this.getOrCreateSession(sessionId);
+    session.storeInMemory(key, value);
+    
+    // Persist if using persistent storage
+    if (this.storage.isPersistent()) {
+      await this.storage.updateSession(session);
+    }
+  }
+
+  /**
+   * Retrieve data from session memory
+   */
+  async getFromSessionMemory(sessionId: string, key: string): Promise<any> {
+    const session = await this.getOrCreateSession(sessionId);
+    return session.getFromMemory(key);
+  }
+
+  /**
+   * Check if session memory has a specific key
+   */
+  async hasInSessionMemory(sessionId: string, key: string): Promise<boolean> {
+    const session = await this.getOrCreateSession(sessionId);
+    return session.hasInMemory(key);
+  }
+
+  /**
+   * Clear session memory (all or specific key)
+   */
+  async clearSessionMemory(sessionId: string, key?: string): Promise<void> {
+    const session = await this.getOrCreateSession(sessionId);
+    session.clearMemory(key);
+    
+    // Persist if using persistent storage
+    if (this.storage.isPersistent()) {
+      await this.storage.updateSession(session);
+    }
+  }
+
+  /**
+   * Get all memory keys for a session
+   */
+  async getSessionMemoryKeys(sessionId: string): Promise<string[]> {
+    const session = await this.getOrCreateSession(sessionId);
+    return session.getMemoryKeys();
   }
 }
 

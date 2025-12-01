@@ -446,3 +446,12 @@ export {
 export * from './calendar';
 export { calendarTools } from './tools/calendarTools';
 
+// Connection Routing & Intent-Based Routing
+export { ConnectionContextStorage, getConnectionContextStorage } from './connectionContextStorage';
+export { IntentExtractor } from './intentExtractor';
+export { ConnectionRouter } from './connectionRouter';
+export { ConnectionScorer } from './connectionScorer';
+export { RoutingDecisionMaker } from './routingDecisionMaker';
+export { ConfirmationHandler } from './confirmationHandler';
+export { RoutingLogger, getRoutingLogger } from './routingLogger';
+

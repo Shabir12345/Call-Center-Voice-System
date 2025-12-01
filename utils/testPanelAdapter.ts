@@ -6,23 +6,48 @@
  */
 
 import { SystemOrchestrator, SystemConfig } from './systemOrchestrator';
-import { AppNode, RouterNodeData, DepartmentNodeData, SubAgentNodeData } from '../types';
+import { VoiceOrchestrator, VoiceOrchestratorOptions } from './voiceOrchestrator';
+import { ToolExecutor, ToolExecutorOptions } from './toolExecutor';
+import { AppNode, Edge, RouterNodeData, DepartmentNodeData, SubAgentNodeData, NodeType } from '../types';
 import { MasterAgentConfig } from './masterAgent';
 import { SubAgentConfig } from './subAgentModule';
 import { CentralLogger } from './logger';
 import { AppVariantManager, AppConfig } from './appVariant';
+import { Tracer } from './tracing';
+
+/**
+ * Callbacks for visual feedback and real-time updates
+ */
+export interface TestPanelCallbacks {
+  onSystemMessage?: (message: string) => void;
+  onAgentActive?: (agentId: string) => void;
+  onEdgeAnimate?: (source: string, target: string) => void;
+  // Enhanced UI callbacks for Integration Nodes
+  onSetActiveNodes?: (nodeIds: string[]) => void;
+  onSetNodeError?: (nodeId: string, error: string) => void;
+  onUpdateNodeUsage?: (nodeId: string) => void;
+  onLog?: (level: 'debug' | 'system', text: string, details?: any) => void;
+}
 
 /**
  * Adapter to bridge TestPanel with new architecture
  */
 export class TestPanelAdapter {
   private orchestrator: SystemOrchestrator | null = null;
+  private voiceOrchestrator: VoiceOrchestrator | null = null;
+  private toolExecutor: ToolExecutor | null = null;
   private logger: CentralLogger;
+  private tracer: Tracer;
   private appVariantManager: AppVariantManager;
   private currentAppVariant: string | null = null;
+  private callbacks: TestPanelCallbacks = {};
+  private nodes: AppNode[] = [];
+  private edges: Edge[] = [];
+  private mode: 'text' | 'voice' = 'text';
 
   constructor() {
     this.logger = new CentralLogger('info');
+    this.tracer = new Tracer(this.logger);
     this.appVariantManager = new AppVariantManager();
   }
 
@@ -104,11 +129,25 @@ export class TestPanelAdapter {
   }
 
   /**
-   * Initialize from TestPanel nodes (with optional app variant)
+   * Initialize from TestPanel nodes (with optional app variant and callbacks)
    */
-  async initializeFromNodes(nodes: AppNode[], appVariantId?: string): Promise<void> {
+  async initializeFromNodes(
+    nodes: AppNode[],
+    appVariantId?: string,
+    callbacks?: TestPanelCallbacks,
+    edges?: Edge[],
+    mode: 'text' | 'voice' = 'text',
+    apiKey?: string
+  ): Promise<void> {
+    // Store callbacks, nodes, and edges
+    if (callbacks) {
+      this.callbacks = callbacks;
+    }
+    this.nodes = nodes;
+    this.edges = edges || [];
+    this.mode = mode;
     // Find router node (master agent)
-    const routerNode = nodes.find(node => node.type === 'Router');
+    const routerNode = nodes.find(node => node.type === NodeType.ROUTER);
     if (!routerNode) {
       throw new Error('No Router node found');
     }
@@ -128,18 +167,45 @@ export class TestPanelAdapter {
     }
 
     // Find department nodes (sub-agents)
-    const departmentNodes = nodes.filter(node => node.type === 'Department');
-    const subAgentNodes = nodes.filter(node => node.type === 'Sub_Agent');
+    const departmentNodes = nodes.filter(node => node.type === NodeType.DEPARTMENT);
+    const subAgentNodes = nodes.filter(node => node.type === NodeType.SUB_AGENT);
+
+    // Enhance callbacks to include agent name lookup
+    const enhancedCallbacks = { ...this.callbacks };
+    if (enhancedCallbacks.onSystemMessage) {
+      const originalOnSystemMessage = enhancedCallbacks.onSystemMessage;
+      enhancedCallbacks.onSystemMessage = (message: string) => {
+        // If message contains agent ID, try to replace with agent name
+        const match = message.match(/Consulting (\w+)/);
+        if (match) {
+          const agentId = match[1];
+          const agentNode = this.nodes.find(n => n.id === agentId);
+          if (agentNode) {
+            const agentName = (agentNode.data as DepartmentNodeData | SubAgentNodeData).agentName || 
+                            (agentNode.data as DepartmentNodeData).name ||
+                            agentNode.data.label ||
+                            agentNode.id;
+            message = message.replace(/Consulting \w+/, `Consulting ${agentName}`);
+          }
+        }
+        originalOnSystemMessage(message);
+      };
+    }
 
     // Build master agent config (merge app variant with node config)
-    const masterAgentConfig: MasterAgentConfig = appConfig?.masterAgentConfig || {
+    const masterAgentConfig: MasterAgentConfig = {
+      ...(appConfig?.masterAgentConfig || {}),
       agentId: routerNode.id,
-      systemPrompt: routerData.systemPrompt || 'You are a helpful assistant.',
+      systemPrompt: routerData.systemPrompt || appConfig?.masterAgentConfig?.systemPrompt || 'You are a helpful assistant.',
       voiceSettings: routerData.voiceSettings || appConfig?.masterAgentConfig?.voiceSettings,
       intents: routerData.intents || appConfig?.masterAgentConfig?.intents || [],
       guardrails: routerData.guardrails || appConfig?.masterAgentConfig?.guardrails,
       bidirectionalEnabled: routerData.bidirectionalEnabled || appConfig?.masterAgentConfig?.bidirectionalEnabled || false,
-      communicationTimeout: routerData.communicationTimeout || appConfig?.masterAgentConfig?.communicationTimeout || 30000
+      communicationTimeout: routerData.communicationTimeout || appConfig?.masterAgentConfig?.communicationTimeout || 30000,
+      // Add enhanced callbacks for visual feedback
+      onSystemMessage: enhancedCallbacks.onSystemMessage,
+      onAgentActive: enhancedCallbacks.onAgentActive,
+      onEdgeAnimate: enhancedCallbacks.onEdgeAnimate
     };
 
     // Merge system prompt if app variant provides one
@@ -208,14 +274,53 @@ export class TestPanelAdapter {
       appVariantCustomizations: appConfig?.businessRules
     };
 
-    // Create orchestrator
-    this.orchestrator = new SystemOrchestrator(orchestratorConfig);
+    // Create orchestrator based on mode
+    if (mode === 'voice' && apiKey) {
+      // Create VoiceOrchestrator for voice mode
+      const voiceOptions: VoiceOrchestratorOptions = {
+        apiKey,
+        logger: this.logger,
+        onTranscription: callbacks?.onLog ? (text, role, isFinal) => {
+          callbacks.onLog?.('system', `${role}: ${text}`, { isFinal });
+        } : undefined,
+        onSetActiveNodes: callbacks?.onSetActiveNodes,
+        onSetNodeError: callbacks?.onSetNodeError,
+        onLog: callbacks?.onLog
+      };
 
-    await this.orchestrator.initialize();
+      this.voiceOrchestrator = new VoiceOrchestrator(orchestratorConfig, voiceOptions);
+      this.voiceOrchestrator.updateNodesAndEdges(this.nodes, this.edges);
+      await this.voiceOrchestrator.initialize();
+    } else {
+      // Create SystemOrchestrator for text mode
+      this.orchestrator = new SystemOrchestrator(orchestratorConfig);
+      await this.orchestrator.initialize();
+    }
+
+    // Initialize ToolExecutor for Integration Node support
+    const toolExecutorOptions: ToolExecutorOptions = {
+      timeout: routerData.communicationTimeout || 10000,
+      retry: {
+        enabled: true,
+        maxRetries: 3,
+        initialDelay: 1000,
+        maxDelay: 10000
+      },
+      logger: this.logger,
+      tracer: this.tracer,
+      onSetActiveNodes: callbacks?.onSetActiveNodes,
+      onSetNodeError: callbacks?.onSetNodeError,
+      onUpdateNodeUsage: callbacks?.onUpdateNodeUsage,
+      onLog: callbacks?.onLog
+    };
+
+    this.toolExecutor = new ToolExecutor(this.nodes, this.edges, toolExecutorOptions);
 
     this.logger.info('TestPanel adapter initialized', {
       masterAgent: routerNode.id,
-      subAgents: subAgentConfigs.length
+      subAgents: subAgentConfigs.length,
+      mode,
+      hasToolExecutor: !!this.toolExecutor
     });
   }
 
@@ -227,11 +332,80 @@ export class TestPanelAdapter {
     sessionId: string,
     userId?: string
   ): Promise<string> {
+    if (this.voiceOrchestrator) {
+      // Use VoiceOrchestrator for text-based processing (fallback)
+      return await this.voiceOrchestrator.processCallerInput(callerInput, sessionId, userId);
+    }
+
     if (!this.orchestrator) {
       throw new Error('Orchestrator not initialized. Call initializeFromNodes first.');
     }
 
     return await this.orchestrator.processCallerInput(callerInput, sessionId, userId);
+  }
+
+  /**
+   * Execute a tool with Integration Node support
+   * 
+   * @param toolNodeId - ID of the tool agent node (SubAgentNode)
+   * @param args - Arguments passed to the tool
+   * @returns Tool execution result
+   */
+  async executeTool(toolNodeId: string, args: Record<string, any> = {}): Promise<any> {
+    if (!this.toolExecutor) {
+      throw new Error('ToolExecutor not initialized. Call initializeFromNodes first.');
+    }
+
+    return await this.toolExecutor.executeTool(toolNodeId, args);
+  }
+
+  /**
+   * Update nodes and edges (for dynamic workflows)
+   */
+  updateNodesAndEdges(nodes: AppNode[], edges: Edge[]): void {
+    this.nodes = nodes;
+    this.edges = edges;
+    
+    if (this.toolExecutor) {
+      this.toolExecutor.updateNodesAndEdges(nodes, edges);
+    }
+    
+    if (this.voiceOrchestrator) {
+      this.voiceOrchestrator.updateNodesAndEdges(nodes, edges);
+    }
+  }
+
+  /**
+   * Start voice session (for voice mode)
+   */
+  async startVoiceSession(agentNodeId: string, tools: any[] = []): Promise<void> {
+    if (!this.voiceOrchestrator) {
+      throw new Error('VoiceOrchestrator not initialized. Initialize with voice mode first.');
+    }
+    await this.voiceOrchestrator.startVoiceSession(agentNodeId, tools);
+  }
+
+  /**
+   * Stop voice session
+   */
+  async stopVoiceSession(): Promise<void> {
+    if (this.voiceOrchestrator) {
+      await this.voiceOrchestrator.stopVoiceSession();
+    }
+  }
+
+  /**
+   * Get VoiceOrchestrator (for advanced voice usage)
+   */
+  getVoiceOrchestrator(): VoiceOrchestrator | null {
+    return this.voiceOrchestrator;
+  }
+
+  /**
+   * Get ToolExecutor (for advanced tool usage)
+   */
+  getToolExecutor(): ToolExecutor | null {
+    return this.toolExecutor;
   }
 
   /**
@@ -262,10 +436,16 @@ export class TestPanelAdapter {
    * Shutdown
    */
   async shutdown(): Promise<void> {
+    if (this.voiceOrchestrator) {
+      await this.voiceOrchestrator.shutdown();
+      this.voiceOrchestrator = null;
+    }
     if (this.orchestrator) {
       await this.orchestrator.shutdown();
       this.orchestrator = null;
     }
+    // ToolExecutor doesn't need shutdown (stateless)
+    this.toolExecutor = null;
   }
 }
 

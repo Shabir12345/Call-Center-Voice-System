@@ -22,6 +22,10 @@ export interface CircuitBreakerConfig {
   successThreshold: number;      // Number of successes to close from half-open
   timeout: number;               // Time in ms to wait before attempting half-open
   resetTimeout: number;          // Time in ms before transitioning from open to half-open
+  enablePersistence?: boolean;   // Enable state persistence (default: false)
+  persistenceKey?: string;       // Storage key for persistence (required if enablePersistence=true)
+  onStateChange?: (state: CircuitState, serviceName?: string) => void;  // Callback for state changes
+  onMetric?: (metric: { type: 'request' | 'success' | 'failure'; serviceName?: string }) => void;  // Callback for metrics
 }
 
 /**
@@ -62,9 +66,23 @@ export class CircuitBreaker {
   private totalSuccesses: number = 0;
   private config: CircuitBreakerConfig;
   private halfOpenTimer?: ReturnType<typeof setTimeout>;
+  private serviceName?: string; // Track service name for callbacks
 
-  constructor(config: Partial<CircuitBreakerConfig> = {}) {
+  constructor(config: Partial<CircuitBreakerConfig> = {}, serviceName?: string) {
     this.config = { ...DEFAULT_CIRCUIT_BREAKER_CONFIG, ...config };
+    this.serviceName = serviceName;
+    
+    // Load persisted state if enabled
+    if (this.config.enablePersistence && this.config.persistenceKey) {
+      this.loadPersistedState();
+    }
+  }
+
+  /**
+   * Set service name (for monitoring callbacks)
+   */
+  setServiceName(name: string): void {
+    this.serviceName = name;
   }
 
   /**
@@ -75,6 +93,9 @@ export class CircuitBreaker {
     fallback?: () => Promise<T> | T
   ): Promise<T> {
     this.totalRequests++;
+    
+    // Emit metric callback
+    this.config.onMetric?.({ type: 'request', serviceName: this.serviceName });
 
     // Check if circuit is open
     if (this.state === CircuitState.OPEN) {
@@ -82,8 +103,11 @@ export class CircuitBreaker {
       
       if (timeSinceLastFailure >= this.config.resetTimeout) {
         // Transition to half-open
+        const previousState = this.state;
         this.state = CircuitState.HALF_OPEN;
         this.successes = 0;
+        this.notifyStateChange(previousState, this.state);
+        this.persistState();
       } else {
         // Circuit is still open, return fallback or throw
         if (fallback) {
@@ -104,10 +128,12 @@ export class CircuitBreaker {
 
       // Success
       this.onSuccess();
+      this.config.onMetric?.({ type: 'success', serviceName: this.serviceName });
       return result;
     } catch (error) {
       // Failure
       this.onFailure();
+      this.config.onMetric?.({ type: 'failure', serviceName: this.serviceName });
       
       if (fallback) {
         return await Promise.resolve(fallback());
@@ -129,14 +155,19 @@ export class CircuitBreaker {
       
       if (this.successes >= this.config.successThreshold) {
         // Close the circuit
+        const previousState = this.state;
         this.state = CircuitState.CLOSED;
         this.failures = 0;
         this.successes = 0;
+        this.notifyStateChange(previousState, this.state);
+        this.persistState();
       }
     } else if (this.state === CircuitState.CLOSED) {
       // Reset failure count on success
       this.failures = 0;
     }
+    
+    this.persistState();
   }
 
   /**
@@ -149,13 +180,89 @@ export class CircuitBreaker {
 
     if (this.state === CircuitState.HALF_OPEN) {
       // Immediately open the circuit again
+      const previousState = this.state;
       this.state = CircuitState.OPEN;
       this.successes = 0;
+      this.notifyStateChange(previousState, this.state);
+      this.persistState();
     } else if (this.state === CircuitState.CLOSED) {
       // Check if we've reached the failure threshold
       if (this.failures >= this.config.failureThreshold) {
+        const previousState = this.state;
         this.state = CircuitState.OPEN;
+        this.notifyStateChange(previousState, this.state);
+        this.persistState();
       }
+    }
+  }
+
+  /**
+   * Notify state change callback
+   */
+  private notifyStateChange(previousState: CircuitState, newState: CircuitState): void {
+    if (previousState !== newState && this.config.onStateChange) {
+      this.config.onStateChange(newState, this.serviceName);
+    }
+  }
+
+  /**
+   * Persist state to storage (if enabled)
+   */
+  private persistState(): void {
+    if (!this.config.enablePersistence || !this.config.persistenceKey) {
+      return;
+    }
+
+    try {
+      const stateToPersist = {
+        state: this.state,
+        failures: this.failures,
+        lastFailureTime: this.lastFailureTime,
+        totalFailures: this.totalFailures,
+        totalSuccesses: this.totalSuccesses,
+        timestamp: Date.now()
+      };
+
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.setItem(
+          this.config.persistenceKey!,
+          JSON.stringify(stateToPersist)
+        );
+      }
+    } catch (error) {
+      // Silently fail if persistence is not available
+      console.warn('Failed to persist circuit breaker state:', error);
+    }
+  }
+
+  /**
+   * Load persisted state from storage (if enabled)
+   */
+  private loadPersistedState(): void {
+    if (!this.config.enablePersistence || !this.config.persistenceKey) {
+      return;
+    }
+
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const persisted = localStorage.getItem(this.config.persistenceKey!);
+        if (persisted) {
+          const stateData = JSON.parse(persisted);
+          
+          // Only restore if state is less than 5 minutes old (stale data)
+          const stateAge = Date.now() - (stateData.timestamp || 0);
+          if (stateAge < 5 * 60 * 1000) {
+            this.state = stateData.state;
+            this.failures = stateData.failures || 0;
+            this.lastFailureTime = stateData.lastFailureTime;
+            this.totalFailures = stateData.totalFailures || 0;
+            this.totalSuccesses = stateData.totalSuccesses || 0;
+          }
+        }
+      }
+    } catch (error) {
+      // Silently fail if loading fails
+      console.warn('Failed to load persisted circuit breaker state:', error);
     }
   }
 

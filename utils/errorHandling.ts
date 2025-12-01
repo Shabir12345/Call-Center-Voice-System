@@ -41,7 +41,15 @@ export enum ErrorCode {
   
   // Rate Limiting
   RATE_LIMIT_ERROR = 'RATE_LIMIT_ERROR',
-  TOO_MANY_REQUESTS = 'TOO_MANY_REQUESTS'
+  TOO_MANY_REQUESTS = 'TOO_MANY_REQUESTS',
+  
+  // Tool/Agent Execution Errors
+  TOOL_EXECUTOR_NOT_INITIALIZED = 'TOOL_EXECUTOR_NOT_INITIALIZED',
+  TOOL_TIMEOUT = 'TOOL_TIMEOUT',
+  TOOL_EXECUTION_ERROR = 'TOOL_EXECUTION_ERROR',
+  TOOL_NOT_FOUND = 'TOOL_NOT_FOUND',
+  TOOL_EXECUTION_FAILED = 'TOOL_EXECUTION_FAILED',
+  MOCK_EXECUTION_ERROR = 'MOCK_EXECUTION_ERROR'
 }
 
 /**
@@ -193,6 +201,44 @@ export const ERROR_CATEGORIES: Record<ErrorCode, ErrorCategory> = {
     retryable: true,
     userFriendlyMessage: 'Rate limit exceeded. Please wait before trying again.',
     httpStatusCode: 429
+  },
+  
+  // Tool/Agent Execution Errors
+  [ErrorCode.TOOL_EXECUTOR_NOT_INITIALIZED]: {
+    code: ErrorCode.TOOL_EXECUTOR_NOT_INITIALIZED,
+    retryable: false,
+    userFriendlyMessage: 'The tool system is not properly initialized. Please refresh the page and try again.',
+    httpStatusCode: 500
+  },
+  [ErrorCode.TOOL_TIMEOUT]: {
+    code: ErrorCode.TOOL_TIMEOUT,
+    retryable: true,
+    userFriendlyMessage: 'The tool took too long to respond. Please try again with a simpler request.',
+    httpStatusCode: 504
+  },
+  [ErrorCode.TOOL_EXECUTION_ERROR]: {
+    code: ErrorCode.TOOL_EXECUTION_ERROR,
+    retryable: true,
+    userFriendlyMessage: 'There was an error executing the tool. Please try again.',
+    httpStatusCode: 500
+  },
+  [ErrorCode.TOOL_NOT_FOUND]: {
+    code: ErrorCode.TOOL_NOT_FOUND,
+    retryable: false,
+    userFriendlyMessage: 'The requested tool could not be found.',
+    httpStatusCode: 404
+  },
+  [ErrorCode.TOOL_EXECUTION_FAILED]: {
+    code: ErrorCode.TOOL_EXECUTION_FAILED,
+    retryable: true,
+    userFriendlyMessage: 'Tool execution failed. Please try again.',
+    httpStatusCode: 500
+  },
+  [ErrorCode.MOCK_EXECUTION_ERROR]: {
+    code: ErrorCode.MOCK_EXECUTION_ERROR,
+    retryable: false,
+    userFriendlyMessage: 'There was an error with the mock integration. Please check the configuration.',
+    httpStatusCode: 500
   }
 };
 

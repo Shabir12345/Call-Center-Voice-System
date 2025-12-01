@@ -17,11 +17,13 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest watch",
     "validate-config": "node scripts/validate-config.js",
+    "test:supabase": "node scripts/test-supabase.js",
     "deploy:staging": "./scripts/deploy.sh staging",
     "deploy:production": "./scripts/deploy.sh production"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
+    "@supabase/supabase-js": "^2.86.0",
     "dagre": "0.8.5",
     "lucide-react": "^0.554.0",
     "react": "^19.2.0",

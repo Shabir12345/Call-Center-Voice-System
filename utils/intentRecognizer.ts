@@ -7,6 +7,8 @@
 
 import { ConversationContext } from '../types';
 import { GoogleGenAI } from '@google/genai';
+import { CacheManager, CacheManagerFactory } from './cacheManager';
+import { CentralLogger } from './logger';
 
 /**
  * Intent recognition result
@@ -27,14 +29,38 @@ export class IntentRecognizer {
   private apiKey: string | null = null;
   private useLLM: boolean = false;
   private intentPatterns: Map<string, RegExp[]> = new Map();
+  private cache: CacheManager<IntentRecognitionResult>;
+  private logger?: CentralLogger;
 
-  constructor(apiKey?: string) {
+  constructor(apiKey?: string, logger?: CentralLogger, enableCache: boolean = true) {
     if (apiKey) {
       this.apiKey = apiKey;
       this.genAI = new GoogleGenAI({ apiKey });
       this.useLLM = true;
     }
+    this.logger = logger;
     this.initializePatterns();
+    
+    // Initialize cache for intent recognition results (Phase 5: Performance Optimization)
+    if (enableCache) {
+      this.cache = CacheManagerFactory.getCache<IntentRecognitionResult>(
+        'intent_recognition',
+        {
+          maxSize: 500,
+          defaultTTL: 15 * 60 * 1000, // 15 minutes cache TTL
+          evictionPolicy: 'lru',
+          enableStats: true
+        },
+        logger
+      );
+    } else {
+      // Create a no-op cache manager if caching is disabled
+      this.cache = CacheManagerFactory.getCache<IntentRecognitionResult>(
+        'intent_recognition_disabled',
+        { maxSize: 0 },
+        logger
+      );
+    }
   }
 
   /**
@@ -83,16 +109,48 @@ export class IntentRecognizer {
 
   /**
    * Parse intent from caller input
+   * Phase 5: Performance Optimization - Added caching for LLM-based recognition
    */
   async parse(
     callerInput: string,
     context: ConversationContext
   ): Promise<IntentRecognitionResult> {
+    // Generate cache key from input and context
+    const cacheKey = this.generateCacheKey(callerInput, context);
+    
+    // Check cache first (only for LLM-based recognition)
     if (this.useLLM && this.genAI) {
-      return await this.parseWithLLM(callerInput, context);
+      const cached = this.cache.get(cacheKey);
+      if (cached) {
+        this.logger?.debug('Intent recognition cache hit', { 
+          cacheKey: cacheKey.substring(0, 50),
+          intent: cached.intent 
+        });
+        return cached;
+      }
+      
+      // Cache miss - parse with LLM and cache result
+      const result = await this.parseWithLLM(callerInput, context);
+      this.cache.set(cacheKey, result);
+      return result;
     } else {
+      // Pattern matching doesn't need caching (fast enough)
       return this.parseWithPatterns(callerInput, context);
     }
+  }
+
+  /**
+   * Generate cache key from input and context
+   */
+  private generateCacheKey(input: string, context: ConversationContext): string {
+    // Normalize input (lowercase, trim whitespace)
+    const normalizedInput = input.toLowerCase().trim();
+    
+    // Include context metadata if relevant (session ID, thread ID)
+    const contextHash = context.threadId ? context.threadId.substring(0, 8) : '';
+    
+    // Create hash-like key (simple hash for caching)
+    return `intent:${normalizedInput}:${contextHash}`.replace(/[^a-z0-9:]/g, '');
   }
 
   /**

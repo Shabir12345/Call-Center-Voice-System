@@ -13,12 +13,20 @@
  * - Provides transcription callbacks for both user and model speech
  */
 import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
+import { RateLimiter, RateLimitConfig, RateLimitError } from './rateLimiter';
+import { CircuitBreaker, CircuitState } from './circuitBreaker';
 
 export interface GeminiConfig {
   apiKey: string;
   voiceName: string;
   systemInstruction: string;
   tools?: any[];
+  // Optional resilience features
+  rateLimiter?: RateLimiter;
+  rateLimitConfig?: RateLimitConfig;
+  circuitBreaker?: CircuitBreaker;
+  onRateLimit?: (retryAfter: number) => void;
+  onCircuitOpen?: () => void;
 }
 
 export interface ToolCallResponse {
@@ -39,6 +47,11 @@ export class GeminiClient {
   private sessionOpenResolver: (() => void) | null = null;
   private isDisconnecting: boolean = false;
   
+  // Resilience features
+  private rateLimiter?: RateLimiter;
+  private circuitBreaker?: CircuitBreaker;
+  private readonly RATE_LIMIT_IDENTIFIER = 'gemini_api';
+  
   public onAudioData: ((audioData: ArrayBuffer) => void) | null = null;
   // Updated signature: returns Promise with results to send back to model
   public onToolCall: ((toolCalls: any[]) => Promise<ToolCallResponse[]>) | null = null;
@@ -50,9 +63,64 @@ export class GeminiClient {
   constructor(config: GeminiConfig) {
     this.config = config;
     this.client = new GoogleGenAI({ apiKey: config.apiKey });
+    
+    // Initialize rate limiter if provided
+    if (config.rateLimiter) {
+      this.rateLimiter = config.rateLimiter;
+    }
+    
+    // Initialize circuit breaker if provided
+    if (config.circuitBreaker) {
+      this.circuitBreaker = config.circuitBreaker;
+      
+      // Set up circuit breaker callbacks
+      // IMPORTANT: Save the original getState method before overriding to avoid infinite recursion
+      if (config.onCircuitOpen) {
+        const originalGetState = this.circuitBreaker.getState.bind(this.circuitBreaker);
+        this.circuitBreaker.getState = () => {
+          const state = originalGetState();
+          if (state === CircuitState.OPEN && config.onCircuitOpen) {
+            config.onCircuitOpen();
+          }
+          return state;
+        };
+      }
+    }
   }
 
   async connect() {
+    // Check rate limit before connecting
+    if (this.rateLimiter) {
+      const rateLimitResult = this.rateLimiter.check(
+        this.RATE_LIMIT_IDENTIFIER,
+        this.config.rateLimitConfig
+      );
+      
+      if (!rateLimitResult.allowed) {
+        const error = new RateLimitError(
+          `Gemini API rate limit exceeded. Retry after ${rateLimitResult.retryAfter} seconds.`,
+          rateLimitResult
+        );
+        
+        if (this.config.onRateLimit) {
+          this.config.onRateLimit(rateLimitResult.retryAfter || 60);
+        }
+        
+        throw error;
+      }
+    }
+
+    // Check circuit breaker
+    if (this.circuitBreaker) {
+      const state = this.circuitBreaker.getState();
+      if (state === CircuitState.OPEN) {
+        if (this.config.onCircuitOpen) {
+          this.config.onCircuitOpen();
+        }
+        throw new Error('Circuit breaker is OPEN - Gemini API unavailable');
+      }
+    }
+
     const config: any = {
       responseModalities: [Modality.AUDIO],
       speechConfig: {
@@ -81,63 +149,86 @@ export class GeminiClient {
     this.isSessionOpen = false;
 
     try {
-        this.session = await this.client.live.connect({
-          model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-          callbacks: {
-            onopen: () => {
-              console.log('Gemini Live Connected');
-              // Log session object structure for debugging
-              if (this.session) {
-                console.log('Session object methods:', Object.keys(this.session));
-                console.log('Session object:', this.session);
-              }
-              this.isSessionOpen = true;
-              if (this.sessionOpenResolver) {
-                this.sessionOpenResolver();
-                this.sessionOpenResolver = null;
+        // Wrap connection in circuit breaker if available
+        const connectFn = async () => {
+          const session = await this.client.live.connect({
+            model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+            callbacks: {
+              onopen: () => {
+                console.log('Gemini Live Connected');
+                // Log session object structure for debugging
+                if (this.session) {
+                  console.log('Session object methods:', Object.keys(this.session));
+                  console.log('Session object:', this.session);
+                }
+                this.isSessionOpen = true;
+                if (this.sessionOpenResolver) {
+                  this.sessionOpenResolver();
+                  this.sessionOpenResolver = null;
+                }
+              },
+              onmessage: (message: LiveServerMessage) => {
+                this.handleMessage(message);
+              },
+              onclose: (event) => {
+                console.log('Gemini Live Closed');
+                console.log('Close event:', event);
+                this.isSessionOpen = false;
+                this.isDisconnecting = true;
+                // Log close reason if available
+                if (event) {
+                  console.log('Close event details:', {
+                    code: event.code,
+                    reason: event.reason,
+                    wasClean: event.wasClean
+                  });
+                } else {
+                  console.log('Close event is null/undefined');
+                }
+                // Log stack trace to see what triggered the close
+                console.trace('Connection closed from:');
+                if (this.onDisconnect) this.onDisconnect();
+              },
+              onerror: (err) => {
+                console.error('Gemini Live Error:', err);
+                this.isSessionOpen = false;
+                // Log more details about the error
+                if (err instanceof Error) {
+                  console.error('Error details:', err.message, err.stack);
+                } else {
+                  console.error('Error object:', JSON.stringify(err, null, 2));
+                }
               }
             },
-            onmessage: (message: LiveServerMessage) => {
-              this.handleMessage(message);
-            },
-            onclose: (event) => {
-              console.log('Gemini Live Closed');
-              console.log('Close event:', event);
-              this.isSessionOpen = false;
-              this.isDisconnecting = true;
-              // Log close reason if available
-              if (event) {
-                console.log('Close event details:', {
-                  code: event.code,
-                  reason: event.reason,
-                  wasClean: event.wasClean
-                });
-              } else {
-                console.log('Close event is null/undefined');
-              }
-              // Log stack trace to see what triggered the close
-              console.trace('Connection closed from:');
-              if (this.onDisconnect) this.onDisconnect();
-            },
-            onerror: (err) => {
-              console.error('Gemini Live Error:', err);
-              this.isSessionOpen = false;
-              // Log more details about the error
-              if (err instanceof Error) {
-                console.error('Error details:', err.message, err.stack);
-              } else {
-                console.error('Error object:', JSON.stringify(err, null, 2));
-              }
+            config: config
+          });
+          return session;
+        };
+
+        // Execute with circuit breaker if available
+        if (this.circuitBreaker) {
+          this.session = await this.circuitBreaker.execute(
+            connectFn,
+            () => {
+              // Fallback: throw error
+              throw new Error('Circuit breaker: Gemini API connection failed - service unavailable');
             }
-          },
-          config: config
-        });
+          );
+        } else {
+          this.session = await connectFn();
+        }
         
         // Wait for the session to be fully open before returning
         await this.sessionOpenPromise;
     } catch (err) {
         console.error("Gemini Connect Error:", err);
         this.isSessionOpen = false;
+        
+        // Report to circuit breaker if available
+        if (this.circuitBreaker && err instanceof Error) {
+          // Circuit breaker tracks failures automatically in execute()
+        }
+        
         throw err;
     }
   }
@@ -218,17 +309,81 @@ export class GeminiClient {
 
   // --- Send Text (Trigger) ---
   async sendText(text: string) {
-      // Ensure session is active before sending
-      if (this.session) {
-          try {
-             // In the new Live API, we might need to send text as a "user turn" or "client content"
-             // However, for system triggers (like prompts), we often use send() with text parts.
-             this.session.send([{ text: text }], true); 
-          } catch (e) {
-              console.warn("Failed to send text to Live Session:", e);
+      // Check rate limit before sending
+      if (this.rateLimiter) {
+        const rateLimitResult = this.rateLimiter.check(
+          this.RATE_LIMIT_IDENTIFIER,
+          this.config.rateLimitConfig
+        );
+        
+        if (!rateLimitResult.allowed) {
+          if (this.config.onRateLimit) {
+            this.config.onRateLimit(rateLimitResult.retryAfter || 60);
           }
-      } else {
-          console.warn("Session not ready or send method missing");
+          throw new RateLimitError(
+            `Rate limit exceeded. Retry after ${rateLimitResult.retryAfter} seconds.`,
+            rateLimitResult
+          );
+        }
+      }
+
+      // Ensure session is active and open before sending
+      if (!this.session) {
+          console.warn("Session not ready");
+          return;
+      }
+
+      // Wait for session to be fully open if not already
+      if (!this.isSessionOpen && this.sessionOpenPromise) {
+          console.log('Waiting for session to be fully open before sending text...');
+          await this.sessionOpenPromise;
+      }
+
+      if (!this.isSessionOpen) {
+          console.warn("Session not open, cannot send text");
+          return;
+      }
+
+      try {
+        // Wrap send in circuit breaker if available
+        const sendFn = async () => {
+          // Try the send method first (similar to audio handling)
+          if (typeof this.session.send === 'function') {
+              this.session.send([{ text: text }], true);
+          } else if (typeof this.session.sendRealtimeInput === 'function') {
+              // Fallback to sendRealtimeInput if send doesn't work
+              this.session.sendRealtimeInput({
+                  text: text
+              });
+          } else {
+              // Log available methods for debugging
+              const availableMethods = Object.keys(this.session).filter(key => typeof this.session[key] === 'function');
+              console.error('No valid send method found on session. Available methods:', availableMethods);
+              console.error('Session object:', this.session);
+              throw new Error('No valid send method found on session');
+          }
+        };
+
+        // Execute with circuit breaker if available
+        if (this.circuitBreaker) {
+          await this.circuitBreaker.execute(
+            sendFn,
+            () => {
+              throw new Error('Circuit breaker: Cannot send text - service unavailable');
+            }
+          );
+        } else {
+          await sendFn();
+        }
+      } catch (e) {
+          console.error("Failed to send text to Live Session:", e);
+          // Log more details about the error
+          if (e instanceof Error) {
+              console.error('Error details:', e.message, e.stack);
+          } else {
+              console.error('Error object:', JSON.stringify(e, null, 2));
+          }
+          throw e; // Re-throw so caller knows it failed
       }
   }
 
@@ -442,5 +597,36 @@ export class GeminiClient {
       bytes[i] = binaryString.charCodeAt(i);
     }
     return bytes.buffer;
+  }
+
+  /**
+   * Get rate limit status for Gemini API
+   */
+  getRateLimitStatus(): { allowed: boolean; remaining: number; resetTime: number; retryAfter?: number } | null {
+    if (!this.rateLimiter) {
+      return null;
+    }
+    
+    const result = this.rateLimiter.check(this.RATE_LIMIT_IDENTIFIER, this.config.rateLimitConfig);
+    return {
+      allowed: result.allowed,
+      remaining: result.remaining,
+      resetTime: result.resetTime,
+      retryAfter: result.retryAfter
+    };
+  }
+
+  /**
+   * Get circuit breaker status
+   */
+  getCircuitBreakerStatus(): { state: string; stats?: any } | null {
+    if (!this.circuitBreaker) {
+      return null;
+    }
+    
+    return {
+      state: this.circuitBreaker.getState(),
+      stats: this.circuitBreaker.getStats()
+    };
   }
 }

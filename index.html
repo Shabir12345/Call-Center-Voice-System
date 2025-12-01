@@ -156,6 +156,47 @@
       .animate-pulse-glow {
         animation: pulseGlow 2s ease-in-out infinite;
       }
+      
+      @keyframes scaleIn {
+        from { opacity: 0; transform: scale(0.95); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      .animate-scaleIn {
+        animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      
+      @keyframes slideDown {
+        from { opacity: 0; transform: translateY(-10px); max-height: 0; }
+        to { opacity: 1; transform: translateY(0); max-height: 500px; }
+      }
+      .animate-slideDown {
+        animation: slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      
+      /* Edge hover effects */
+      .react-flow__edge {
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      
+      .react-flow__edge:hover .react-flow__edge-path {
+        stroke-width: 3.5 !important;
+        stroke: #6366f1 !important;
+        filter: drop-shadow(0 0 4px rgba(99, 102, 241, 0.6));
+      }
+      
+      .react-flow__edge:hover .react-flow__edge-marker {
+        fill: #6366f1 !important;
+      }
+      
+      /* Connection hint animation */
+      @keyframes bounce {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-5px); }
+      }
+      .animate-bounce {
+        animation: bounce 2s ease-in-out infinite;
+      }
     </style>
     <script type="importmap">
     {

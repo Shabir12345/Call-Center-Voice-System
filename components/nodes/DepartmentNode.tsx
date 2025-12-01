@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { DepartmentNodeData, DatabaseConfig } from '../../types';
-import { Network, Trash2, AlertCircle, Database, LayoutGrid, Cpu, Plus, X, Edit2, Check, Wrench, Briefcase, ChevronDown, ChevronRight, GripVertical, Wand2, Loader2, ArrowRightLeft } from 'lucide-react';
+import { Network, Trash2, AlertCircle, Database, LayoutGrid, Cpu, Plus, X, Edit2, Check, Wrench, Briefcase, ChevronDown, ChevronRight, GripVertical, Wand2, Loader2, ArrowRightLeft, Activity } from 'lucide-react';
 import { HelpTip } from '../ui/HelpTip';
 import { isNotEmpty } from '../../utils/validators';
 import { DatabaseConfigPanel } from '../panels/DatabaseConfigPanel';
@@ -205,12 +205,18 @@ const DepartmentNode: React.FC<NodeProps<DepartmentNodeData>> = ({ data, id }) =
             <Network size={16} />
           </div>
           <div>
-            <div className="font-bold text-slate-800 text-xs">Sub Agent</div>
+            <div className="font-bold text-slate-800 text-xs">{localAgentName || 'Sub Agent'}</div>
             <div className="text-[10px] text-cyan-600 font-medium">Logic Controller</div>
           </div>
         </div>
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
             {isActive && !isError && <span className="text-[9px] bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded-full font-bold animate-pulse flex items-center gap-1"><Cpu size={10}/> RUNNING</span>}
+            {data.usageCount !== undefined && data.usageCount > 0 && (
+              <div className="flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full text-[9px] font-bold" title="Usage count in current conversation">
+                <Activity size={10} />
+                {data.usageCount}
+              </div>
+            )}
             <button className={`${showDatabase ? 'text-blue-600 bg-blue-50' : 'text-slate-400 hover:text-blue-500'} p-1.5 rounded-md transition-colors`} onClick={() => setShowDatabase(!showDatabase)}>
                 <Database size={14} />
             </button>

@@ -9,7 +9,7 @@ import { IntegrationNodeData } from '../types';
 import { RestApiIntegration } from './integrations/restIntegration';
 import { GraphQLIntegration } from './integrations/graphqlIntegration';
 import { withTimeout, withRetry, isRetryableError } from './responseValidator';
-import { normalizeSubAgentResponse } from './responseValidation';
+import { normalizeSubAgentResponse } from './responseValidator';
 import { CentralLogger } from './logger';
 import { Tracer } from './tracing';
 

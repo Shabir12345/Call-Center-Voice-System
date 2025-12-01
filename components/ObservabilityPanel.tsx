@@ -13,6 +13,7 @@ import { AnalyticsManager, UsageMetrics } from '../utils/analytics';
 import { Tracer, TraceSpan } from '../utils/tracing';
 import { ReliabilityMetricsTracker, ReliabilityMetrics } from '../utils/reliabilityMetrics';
 import { CentralLogger } from '../utils/logger';
+import { DashboardProvider } from '../utils/dashboard';
 
 interface ObservabilityPanelProps {
   performanceMonitor?: PerformanceMonitor;
@@ -21,6 +22,7 @@ interface ObservabilityPanelProps {
   tracer?: Tracer;
   reliabilityTracker?: ReliabilityMetricsTracker;
   logger?: CentralLogger;
+  dashboardProvider?: DashboardProvider; // Optional DashboardProvider for event-based updates (Phase 3.4)
   autoRefresh?: boolean;
   refreshInterval?: number;
 }
@@ -32,6 +34,7 @@ const ObservabilityPanel: React.FC<ObservabilityPanelProps> = ({
   tracer,
   reliabilityTracker,
   logger,
+  dashboardProvider,
   autoRefresh = true,
   refreshInterval = 5000
 }) => {
@@ -44,19 +47,32 @@ const ObservabilityPanel: React.FC<ObservabilityPanelProps> = ({
 
   useEffect(() => {
     const refreshData = async () => {
-      if (performanceMonitor) {
-        setPerformance(performanceMonitor.getMetrics());
+      if (dashboardProvider) {
+        // Use DashboardProvider if available (event-based updates)
+        const dashboardData = await dashboardProvider.getDashboardData();
+        setPerformance(dashboardData.performance);
+        setHealth(dashboardData.health);
+        setUsage(dashboardData.usage);
+        if (dashboardData.reliability) {
+          setReliability(dashboardData.reliability);
+        }
+      } else {
+        // Fallback to individual tools if DashboardProvider not provided
+        if (performanceMonitor) {
+          setPerformance(performanceMonitor.getMetrics());
+        }
+        if (healthChecker) {
+          const healthReport = await healthChecker.checkHealth();
+          setHealth(healthReport);
+        }
+        if (analyticsManager) {
+          setUsage(analyticsManager.getUsageMetrics());
+        }
+        if (reliabilityTracker) {
+          setReliability(reliabilityTracker.calculateMetrics());
+        }
       }
-      if (healthChecker) {
-        const healthReport = await healthChecker.checkHealth();
-        setHealth(healthReport);
-      }
-      if (analyticsManager) {
-        setUsage(analyticsManager.getUsageMetrics());
-      }
-      if (reliabilityTracker) {
-        setReliability(reliabilityTracker.calculateMetrics());
-      }
+      
       if (tracer) {
         // Get recent traces (active + completed)
         const recentTraces = tracer.getRecentTraces(20);
@@ -66,11 +82,36 @@ const ObservabilityPanel: React.FC<ObservabilityPanelProps> = ({
 
     refreshData();
     
-    if (autoRefresh) {
-      const interval = setInterval(refreshData, refreshInterval);
-      return () => clearInterval(interval);
+    // Subscribe to DashboardProvider events for real-time updates (Phase 3.4)
+    let unsubscribe: (() => void) | null = null;
+    if (dashboardProvider) {
+      unsubscribe = dashboardProvider.on('*', async (event) => {
+        if (event.data) {
+          setPerformance(event.data.performance);
+          setHealth(event.data.health);
+          setUsage(event.data.usage);
+          if (event.data.reliability) {
+            setReliability(event.data.reliability);
+          }
+        }
+      });
     }
-  }, [performanceMonitor, healthChecker, analyticsManager, tracer, reliabilityTracker, autoRefresh, refreshInterval]);
+    
+    // Keep polling as fallback if auto-refresh is enabled and no DashboardProvider
+    let interval: NodeJS.Timeout | null = null;
+    if (autoRefresh && !dashboardProvider) {
+      interval = setInterval(refreshData, refreshInterval);
+    }
+    
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
+  }, [performanceMonitor, healthChecker, analyticsManager, tracer, reliabilityTracker, dashboardProvider, autoRefresh, refreshInterval]);
 
   const getHealthColor = (status: string) => {
     switch (status) {
@@ -360,67 +401,210 @@ const ObservabilityPanel: React.FC<ObservabilityPanelProps> = ({
           </div>
         )}
 
-        {/* Traces Tab */}
-        {selectedTab === 'traces' && (
-          <div className="space-y-4">
-            {activeTraces.length === 0 ? (
-              <div className="text-center text-slate-400 py-8 text-sm">
-                <Layers size={24} className="mx-auto mb-2 opacity-50" />
-                <div>No active traces</div>
-                <div className="text-xs mt-1">Traces will appear here as requests are processed</div>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {activeTraces.map((trace, idx) => {
-                  const duration = trace.duration || (trace.endTime || Date.now()) - trace.startTime;
-                  const isActive = !trace.endTime;
-                  const service = trace.tags?.service || trace.tags?.agentId || 'system';
-                  
-                  return (
-                    <div 
-                      key={trace.spanId || idx} 
-                      className={`p-3 rounded-lg border ${
-                        isActive 
-                          ? 'bg-indigo-50 border-indigo-200' 
-                          : 'bg-slate-50 border-slate-200'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-slate-700">{trace.operation}</span>
-                          {isActive && (
-                            <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded font-medium">
-                              ACTIVE
-                            </span>
-                          )}
-                        </div>
-                        <span className={`text-xs font-medium ${
-                          duration > 5000 ? 'text-red-600' : duration > 2000 ? 'text-yellow-600' : 'text-slate-500'
-                        }`}>
-                          {duration.toFixed(0)}ms
+        {/* Traces Tab - Enhanced with hierarchy and error highlighting */}
+        {selectedTab === 'traces' && (() => {
+          // Group traces by traceId and build hierarchy
+          const tracesByTraceId = new Map<string, TraceSpan[]>();
+          activeTraces.forEach(trace => {
+            const traces = tracesByTraceId.get(trace.traceId) || [];
+            traces.push(trace);
+            tracesByTraceId.set(trace.traceId, traces);
+          });
+
+          // Build span tree for each trace
+          const buildSpanTree = (traces: TraceSpan[]): TraceSpan[] => {
+            const spanMap = new Map<string, TraceSpan>();
+            const rootSpans: TraceSpan[] = [];
+
+            // First pass: create map
+            traces.forEach(span => spanMap.set(span.spanId, span));
+
+            // Second pass: build tree
+            traces.forEach(span => {
+              if (!span.parentSpanId || !spanMap.has(span.parentSpanId)) {
+                rootSpans.push(span);
+              }
+            });
+
+            return rootSpans.sort((a, b) => a.startTime - b.startTime);
+          };
+
+          const renderSpan = (span: TraceSpan, level: number = 0, expandedSpans: Set<string>, toggleExpand: (id: string) => void) => {
+            const duration = span.duration || (span.endTime || Date.now()) - span.startTime;
+            const isActive = !span.endTime;
+            const hasError = span.tags?.success === false || span.tags?.error || span.tags?.errorCode;
+            const service = span.tags?.service || span.tags?.agentId || span.tags?.toolId || 'system';
+            const childSpans = activeTraces.filter(t => t.parentSpanId === span.spanId);
+            const isExpanded = expandedSpans.has(span.spanId);
+            const hasChildren = childSpans.length > 0;
+
+            return (
+              <div key={span.spanId} className="space-y-1">
+                <div 
+                  className={`p-3 rounded-lg border transition-all ${
+                    hasError
+                      ? 'bg-red-50 border-red-200'
+                      : isActive 
+                        ? 'bg-indigo-50 border-indigo-200' 
+                        : 'bg-slate-50 border-slate-200'
+                  }`}
+                  style={{ marginLeft: `${level * 16}px` }}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      {hasChildren && (
+                        <button
+                          onClick={() => toggleExpand(span.spanId)}
+                          className="flex-shrink-0 p-0.5 hover:bg-slate-200 rounded"
+                        >
+                          {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        </button>
+                      )}
+                      {!hasChildren && <div className="w-4" />}
+                      <span className={`text-sm font-semibold truncate ${
+                        hasError ? 'text-red-700' : 'text-slate-700'
+                      }`}>
+                        {span.operation}
+                      </span>
+                      {isActive && (
+                        <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded font-medium flex-shrink-0">
+                          ACTIVE
                         </span>
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-slate-500">
-                        <span>Service: {service}</span>
-                        {trace.traceId && (
-                          <span className="font-mono text-[10px]">Trace: {trace.traceId.substring(0, 8)}...</span>
-                        )}
-                      </div>
-                      {trace.tags && Object.keys(trace.tags).length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-slate-200">
-                          <div className="text-[10px] text-slate-400">
-                            Tags: {Object.entries(trace.tags).slice(0, 3).map(([k, v]) => `${k}=${v}`).join(', ')}
-                            {Object.keys(trace.tags).length > 3 && '...'}
-                          </div>
-                        </div>
+                      )}
+                      {hasError && (
+                        <span className="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded font-medium flex-shrink-0">
+                          ERROR
+                        </span>
                       )}
                     </div>
-                  );
-                })}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={`text-xs font-medium ${
+                        duration > 5000 ? 'text-red-600' : duration > 2000 ? 'text-yellow-600' : 'text-slate-500'
+                      }`}>
+                        {duration.toFixed(0)}ms
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+                    <span>Service: {service}</span>
+                    {span.traceId && (
+                      <span className="font-mono text-[10px] bg-slate-100 px-1.5 py-0.5 rounded">
+                        Trace: {span.traceId.substring(0, 8)}...
+                      </span>
+                    )}
+                    {span.spanId && (
+                      <span className="font-mono text-[10px] text-slate-400">
+                        Span: {span.spanId.substring(0, 8)}...
+                      </span>
+                    )}
+                  </div>
+                  {hasError && span.tags?.error && (
+                    <div className="mt-2 pt-2 border-t border-red-200">
+                      <div className="text-[10px] text-red-600 font-medium">
+                        Error: {span.tags.error}
+                        {span.tags.errorCode && ` (${span.tags.errorCode})`}
+                      </div>
+                    </div>
+                  )}
+                  {isExpanded && span.tags && Object.keys(span.tags).length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-slate-200">
+                      <div className="text-[10px] text-slate-400 space-y-1">
+                        <div className="font-semibold text-slate-500 mb-1">Tags:</div>
+                        {Object.entries(span.tags).map(([k, v]) => (
+                          <div key={k} className="flex gap-2">
+                            <span className="font-medium">{k}:</span>
+                            <span className="font-mono">{typeof v === 'object' ? JSON.stringify(v).substring(0, 50) : String(v)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {isExpanded && span.logs && span.logs.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-slate-200">
+                      <div className="text-[10px] text-slate-400 space-y-1">
+                        <div className="font-semibold text-slate-500 mb-1">Logs ({span.logs.length}):</div>
+                        {span.logs.slice(0, 5).map((log, idx) => (
+                          <div key={idx} className="font-mono text-[9px]">
+                            [{new Date(log.timestamp).toLocaleTimeString()}] {log.message}
+                          </div>
+                        ))}
+                        {span.logs.length > 5 && <div className="text-slate-400">... {span.logs.length - 5} more</div>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {isExpanded && hasChildren && (
+                  <div className="space-y-1">
+                    {childSpans
+                      .sort((a, b) => a.startTime - b.startTime)
+                      .map(child => renderSpan(child, level + 1, expandedSpans, toggleExpand))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        )}
+            );
+          };
+
+          const [expandedSpans, setExpandedSpans] = useState<Set<string>>(new Set());
+          const toggleExpand = (spanId: string) => {
+            setExpandedSpans(prev => {
+              const next = new Set(prev);
+              if (next.has(spanId)) {
+                next.delete(spanId);
+              } else {
+                next.add(spanId);
+              }
+              return next;
+            });
+          };
+
+          return (
+            <div className="space-y-4">
+              {activeTraces.length === 0 ? (
+                <div className="text-center text-slate-400 py-8 text-sm">
+                  <Layers size={24} className="mx-auto mb-2 opacity-50" />
+                  <div>No active traces</div>
+                  <div className="text-xs mt-1">Traces will appear here as requests are processed</div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {Array.from(tracesByTraceId.entries()).map(([traceId, traces]) => {
+                    const rootSpans = buildSpanTree(traces);
+                    const totalDuration = traces.reduce((max, t) => {
+                      const end = t.endTime || Date.now();
+                      return Math.max(max, end - t.startTime);
+                    }, 0);
+                    const hasErrors = traces.some(t => t.tags?.success === false || t.tags?.error);
+
+                    return (
+                      <div key={traceId} className="border border-slate-200 rounded-lg p-3 bg-white">
+                        <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-200">
+                          <div className="flex items-center gap-2">
+                            <Layers size={14} className="text-indigo-600" />
+                            <span className="text-xs font-semibold text-slate-700">Trace</span>
+                            <span className="font-mono text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                              {traceId.substring(0, 12)}...
+                            </span>
+                            {hasErrors && (
+                              <span className="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded font-medium">
+                                HAS ERRORS
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            {traces.length} spans • {totalDuration.toFixed(0)}ms total
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          {rootSpans.map(span => renderSpan(span, 0, expandedSpans, toggleExpand))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* No Data State */}
         {!performance && !health && !usage && !reliability && selectedTab !== 'traces' && (

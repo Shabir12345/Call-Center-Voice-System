@@ -139,11 +139,13 @@ export interface BaseNodeData {
   label: string;
   active?: boolean; // Visual feedback for simulation
   error?: string; // Visual feedback for runtime errors
+  usageCount?: number; // Number of times this node has been used in current conversation
   databaseConfig?: DatabaseConfig;
   voiceSettings?: VoiceSettings; // New: Voice Control
   onDelete?: (id: string) => void;
   onDatabaseChange?: (id: string, config: DatabaseConfig) => void;
   onVoiceSettingsChange?: (id: string, settings: VoiceSettings) => void;
+  onUsageUpdate?: (id: string, count: number) => void; // Callback to update usage count
 }
 
 export interface RouterNodeData extends BaseNodeData {
@@ -415,4 +417,157 @@ export interface BidirectionalConfig {
   timeout: number; // Timeout for bidirectional responses in milliseconds
   retryEnabled: boolean; // Whether to retry failed bidirectional calls
   maxRetries: number; // Maximum retry attempts
+}
+
+// --- Connection & Intent Routing Types ---
+
+/**
+ * Risk level for connection safety
+ */
+export type RiskLevel = 'low' | 'medium' | 'high';
+
+/**
+ * Precondition for a connection - defines required data/flags
+ */
+export interface ConnectionPrecondition {
+  key: string; // e.g., 'customer_id_collected', 'auth_status'
+  operator: 'equals' | 'not_equals' | 'exists' | 'not_exists' | 'greater_than' | 'less_than';
+  value?: any; // Value to compare against (not needed for exists/not_exists)
+}
+
+/**
+ * Connection Context Card - Rich metadata for intent-based routing
+ */
+export interface ConnectionContextCard {
+  id: string; // Unique identifier for this connection context
+  connectionId: string; // References the Edge.id in the flow graph
+  name: string; // Human-readable name
+  fromNode: string; // Source node ID
+  toNode: string; // Target node ID
+  priority: number; // Priority for routing (higher = more preferred, default: 0)
+  enabled: boolean; // Whether this connection is active
+  
+  // Core routing information
+  purpose: string; // Short description of what this connection is for
+  whenToUse: string; // Free-text: "Use this connection when the caller is trying to ..."
+  whenNotToUse?: string; // Contraindications and forbidden topics
+  examplePhrases?: string[]; // Example phrases or scenarios (e.g., "upgrade my plan", "cancel subscription")
+  
+  // Preconditions
+  preconditions?: ConnectionPrecondition[]; // Required data/flags before this connection can be used
+  
+  // Safety & confirmation
+  riskLevel: RiskLevel; // Risk level for this connection
+  riskNotes?: string; // Notes about why it's risky (e.g., "changes billing", "cancels service")
+  requiresConfirmation: boolean; // Whether AI must ask caller for confirmation before using
+  
+  // System prompt additions
+  systemPromptAdditions?: string; // Extra instructions injected only when this connection is being considered/used
+  
+  // Examples
+  usageExamples?: string[]; // 2-5 short example dialogues or instructions
+  
+  // Metadata
+  createdAt?: number;
+  updatedAt?: number;
+  tags?: string[]; // Optional tags for grouping (e.g., "billing", "technical-support")
+}
+
+/**
+ * Connection - Extends Edge with context card reference
+ */
+export interface AppConnection extends Edge {
+  contextCardId?: string; // Optional reference to ConnectionContextCard
+  metadata?: {
+    contextCardId?: string;
+    [key: string]: any;
+  };
+}
+
+/**
+ * Caller Intent - Extracted from conversation
+ */
+export interface CallerIntent {
+  intentLabel: string; // High-level intent label (e.g., "upgrade_plan", "cancel_service")
+  confidence: number; // 0-1 confidence score
+  entities: Record<string, any>; // Extracted entities (names, dates, account numbers, etc.)
+  urgency?: 'low' | 'medium' | 'high'; // Urgency level
+  extractedAt: number; // Timestamp when intent was extracted
+}
+
+/**
+ * Intent History - Track intent changes over time
+ */
+export interface IntentHistoryEntry {
+  intent: CallerIntent;
+  timestamp: number;
+  conversationTurn: number; // Which turn in the conversation
+}
+
+/**
+ * Conversation State - Extended state for routing decisions
+ */
+export interface ConversationState {
+  currentNode?: string; // Current node ID in the flow
+  currentIntent?: CallerIntent; // Current intent
+  intentHistory: IntentHistoryEntry[]; // History of intents
+  knownEntities: Record<string, any>; // Accumulated entities from conversation
+  flags: Record<string, any>; // State flags (e.g., authenticated, high_anger, VIP)
+  connectionHistory: string[]; // History of connection IDs used (for learning)
+  lastConnectionScore?: number; // Score of last chosen connection
+  clarificationCount: number; // Number of clarification questions asked
+}
+
+/**
+ * Connection Score - Result of LLM-based scoring
+ */
+export interface ConnectionScore {
+  connectionId: string;
+  contextCardId: string;
+  score: number; // 0-1 or 0-100 intent match score
+  reason: string; // 1-2 sentence explanation for traceability
+  metadata?: {
+    ruleBasedBoost?: number; // Boost from rule-based logic
+    riskPenalty?: number; // Penalty for high risk
+    [key: string]: any;
+  };
+}
+
+/**
+ * Routing Decision - Result of connection selection
+ */
+export interface RoutingDecision {
+  chosenConnectionId: string;
+  chosenContextCardId: string;
+  score: number;
+  reason: string;
+  candidates: ConnectionScore[]; // All scored candidates
+  usedFallback: boolean; // Whether a fallback connection was used
+  requiredConfirmation: boolean; // Whether confirmation is needed
+  timestamp: number;
+}
+
+/**
+ * Graph Configuration - Per-scenario configuration
+ */
+export interface GraphConfiguration {
+  scenarioId: string; // Unique identifier for this scenario/call type
+  scenarioName: string; // Human-readable name
+  entryNode?: string; // Optional entry node ID
+  defaultSafeNode?: string; // Default safe node for confusion fallback
+  connectionGroups?: {
+    [groupName: string]: string[]; // Group name -> array of connection IDs
+  };
+  allowedNodes: string[]; // Allowed node IDs for this scenario
+  allowedConnections: string[]; // Allowed connection IDs for this scenario
+}
+
+/**
+ * Clarification Template - Standard clarification patterns
+ */
+export interface ClarificationTemplate {
+  id: string;
+  name: string;
+  template: string; // Template with placeholders like {X}, {Y}, {ACTION}
+  useCase: string; // When to use this template
 }

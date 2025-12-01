@@ -1,0 +1,104 @@
+name: Code Quality Checks
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Type check
+        run: npx tsc --noEmit
+      
+      - name: Check bundle size
+        run: |
+          npm run build
+          echo "Bundle size check:"
+          du -sh dist/ || echo "Dist folder not found"
+          find dist -type f -name "*.js" -exec ls -lh {} \; | awk '{print $5 "\t" $9}' || echo "No JS files found"
+      
+      - name: Analyze bundle size
+        run: |
+          if [ -d "dist" ]; then
+            TOTAL_SIZE=$(du -sb dist | cut -f1)
+            MAX_SIZE=$((10 * 1024 * 1024)) # 10MB limit
+            if [ "$TOTAL_SIZE" -gt "$MAX_SIZE" ]; then
+              echo "⚠️ Warning: Bundle size ($TOTAL_SIZE bytes) exceeds recommended limit ($MAX_SIZE bytes)"
+            else
+              echo "✅ Bundle size ($TOTAL_SIZE bytes) is within limits"
+            fi
+          fi
+        continue-on-error: true
+
+  dependency-check:
+    name: Dependency Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Check for outdated packages
+        run: npm outdated || echo "Some packages are outdated (this is informational)"
+        continue-on-error: true
+      
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+        continue-on-error: true
+      
+      - name: Check license compatibility
+        run: |
+          echo "License check placeholder - add license scanner if needed"
+        continue-on-error: true
+
+  complexity-check:
+    name: Code Complexity Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Analyze TypeScript complexity
+        run: |
+          echo "Complexity analysis:"
+          echo "Files over 500 lines:"
+          find . -name "*.ts" -o -name "*.tsx" | grep -v node_modules | xargs wc -l | awk '$1 > 500 {print $1 " lines: " $2}' || echo "No files exceed 500 lines"
+          echo ""
+          echo "Largest files:"
+          find . -name "*.ts" -o -name "*.tsx" | grep -v node_modules | xargs wc -l | sort -rn | head -10
+        continue-on-error: true
+

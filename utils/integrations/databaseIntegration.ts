@@ -3,10 +3,12 @@
  * 
  * Handles database queries for sub-agents and tool agents.
  * Supports both direct queries and ORM-style operations.
+ * Now integrated with Supabase for persistent storage.
  */
 
 import { DatabaseConfig } from '../../types';
 import { withRetry } from '../responseValidator';
+import { getSupabaseClient, isSupabaseConfigured } from '../supabaseClient';
 
 /**
  * Database query result
@@ -23,13 +25,16 @@ export interface DatabaseQueryResult {
  */
 export class DatabaseIntegration {
   private config: DatabaseConfig;
+  private useSupabase: boolean;
 
   constructor(config: DatabaseConfig) {
     this.config = config;
+    this.useSupabase = isSupabaseConfigured() && this.config.supabaseConfig?.tableName;
   }
 
   /**
    * Execute database query
+   * Supports both Supabase queries and fallback to local knowledge base
    */
   async executeQuery(
     query: string,
@@ -43,14 +48,16 @@ export class DatabaseIntegration {
     }
 
     try {
-      // In production, this would connect to actual database
-      // For now, simulate with knowledge base and static data
-      
+      // If Supabase is configured and table name is specified, use Supabase
+      if (this.useSupabase && this.config.supabaseConfig?.tableName) {
+        return await this.executeSupabaseQuery(query, parameters);
+      }
+
+      // Fallback to local knowledge base search
       if (query.toLowerCase().includes('select') || query.toLowerCase().includes('search')) {
         return await this.searchKnowledgeBase(query, parameters);
       }
 
-      // For other queries, would execute against actual database
       return {
         success: false,
         error: 'Database query execution not fully implemented'
@@ -60,6 +67,155 @@ export class DatabaseIntegration {
       return {
         success: false,
         error: error.message || 'Database query failed'
+      };
+    }
+  }
+
+  /**
+   * Execute query against Supabase
+   */
+  private async executeSupabaseQuery(
+    query: string,
+    parameters?: Record<string, any>
+  ): Promise<DatabaseQueryResult> {
+    try {
+      const supabase = getSupabaseClient();
+      const tableName = this.config.supabaseConfig?.tableName;
+
+      if (!tableName) {
+        throw new Error('Supabase table name not configured');
+      }
+
+      // Parse simple SELECT queries
+      if (query.toLowerCase().trim().startsWith('select')) {
+        let queryBuilder = supabase.from(tableName).select('*');
+
+        // Apply filters from parameters
+        if (parameters) {
+          for (const [key, value] of Object.entries(parameters)) {
+            if (value !== undefined && value !== null) {
+              queryBuilder = queryBuilder.eq(key, value);
+            }
+          }
+        }
+
+        const { data, error } = await queryBuilder;
+
+        if (error) {
+          return {
+            success: false,
+            error: error.message,
+            rowCount: 0
+          };
+        }
+
+        return {
+          success: true,
+          data: data || [],
+          rowCount: data?.length || 0
+        };
+      }
+
+      // For INSERT, UPDATE, DELETE operations
+      if (query.toLowerCase().trim().startsWith('insert')) {
+        if (!parameters || !parameters.data) {
+          return {
+            success: false,
+            error: 'INSERT query requires data parameter'
+          };
+        }
+
+        const { data, error } = await supabase
+          .from(tableName)
+          .insert(parameters.data)
+          .select();
+
+        if (error) {
+          return {
+            success: false,
+            error: error.message,
+            rowCount: 0
+          };
+        }
+
+        return {
+          success: true,
+          data: data || [],
+          rowCount: data?.length || 0
+        };
+      }
+
+      if (query.toLowerCase().trim().startsWith('update')) {
+        if (!parameters || !parameters.data) {
+          return {
+            success: false,
+            error: 'UPDATE query requires data parameter'
+          };
+        }
+
+        let queryBuilder = supabase.from(tableName).update(parameters.data);
+
+        // Apply WHERE conditions
+        if (parameters.where) {
+          for (const [key, value] of Object.entries(parameters.where)) {
+            queryBuilder = queryBuilder.eq(key, value);
+          }
+        }
+
+        const { data, error } = await queryBuilder.select();
+
+        if (error) {
+          return {
+            success: false,
+            error: error.message,
+            rowCount: 0
+          };
+        }
+
+        return {
+          success: true,
+          data: data || [],
+          rowCount: data?.length || 0
+        };
+      }
+
+      if (query.toLowerCase().trim().startsWith('delete')) {
+        let queryBuilder = supabase.from(tableName).delete();
+
+        // Apply WHERE conditions
+        if (parameters?.where) {
+          for (const [key, value] of Object.entries(parameters.where)) {
+            queryBuilder = queryBuilder.eq(key, value);
+          }
+        }
+
+        const { data, error } = await queryBuilder.select();
+
+        if (error) {
+          return {
+            success: false,
+            error: error.message,
+            rowCount: 0
+          };
+        }
+
+        return {
+          success: true,
+          data: data || [],
+          rowCount: data?.length || 0
+        };
+      }
+
+      return {
+        success: false,
+        error: 'Unsupported query type. Supported: SELECT, INSERT, UPDATE, DELETE'
+      };
+
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message || 'Supabase query failed',
+        rowCount: 0
       };
     }
   }
@@ -111,8 +267,30 @@ export class DatabaseIntegration {
 
   /**
    * Get knowledge base item by ID
+   * Tries Supabase first, then falls back to local knowledge base
    */
   async getKnowledgeItem(id: string): Promise<any | null> {
+    // Try Supabase first if configured
+    if (this.useSupabase && this.config.supabaseConfig?.tableName) {
+      try {
+        const supabase = getSupabaseClient();
+        const tableName = this.config.supabaseConfig.tableName;
+        
+        const { data, error } = await supabase
+          .from(tableName)
+          .select('*')
+          .eq('id', id)
+          .single();
+
+        if (!error && data) {
+          return data;
+        }
+      } catch (error) {
+        console.warn('Failed to fetch from Supabase, falling back to local:', error);
+      }
+    }
+
+    // Fallback to local knowledge base
     if (!this.config.knowledgeBase) {
       return null;
     }

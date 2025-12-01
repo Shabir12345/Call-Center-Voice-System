@@ -33,11 +33,13 @@ import KnowledgeBaseNode from './nodes/KnowledgeBaseNode';
 import CustomerProfileNode from './nodes/CustomerProfileNode';
 import { ContextMenu } from './ui/ContextMenu';
 import { NodeType, AppNode, RouterNodeData, DepartmentNodeData, SubAgentNodeData, IntegrationNodeData, NoteNodeData, LogicNodeData, KnowledgeBaseNodeData, CustomerProfileNodeData, AgentParameter, DatabaseConfig, VoiceSettings, ProjectMetadata } from '../types';
-import { Save, Upload, Undo, Redo, Folder, Plus, ChevronDown, Check, Download, FileDown, Search, Wand2, Code, Share2, X, Play, Calendar } from 'lucide-react';
+import { Save, Upload, Undo, Redo, Folder, Plus, ChevronDown, Check, Download, FileDown, Search, Wand2, Code, Share2, X, Play, Calendar, ArrowRight } from 'lucide-react';
 import { CalendarConnectionDialog } from './workflow/CalendarConnectionDialog';
+import { ConnectionDetailsPanel } from './workflow/ConnectionDetailsPanel';
 import { CalendarConnection } from '../types/calendarTypes';
 import { CalendarService } from '../utils/calendar/calendarService';
 import { OAuthHandler } from '../utils/calendar/oauthHandler';
+import { ConnectionContextCard } from '../types';
 
 const nodeTypes = {
   [NodeType.ROUTER]: RouterNode,
@@ -76,6 +78,7 @@ const WorkflowEditor: React.FC = () => {
   const [showExport, setShowExport] = useState(false);
   const [showCalendarDialog, setShowCalendarDialog] = useState(false);
   const [calendarConnections, setCalendarConnections] = useState<CalendarConnection[]>([]);
+  const [selectedConnection, setSelectedConnection] = useState<{ id: string; from: string; to: string } | null>(null);
   
   // Calendar service - create once
   const calendarServiceRef = useRef<CalendarService | null>(null);
@@ -200,7 +203,38 @@ const WorkflowEditor: React.FC = () => {
   const onDeleteNode = useCallback((id: string) => { takeSnapshot(); setNodes((nds) => nds.filter((node) => node.id !== id)); setEdges((eds) => eds.filter((edge) => edge.source !== id && edge.target !== id)); }, [setNodes, setEdges, takeSnapshot]);
   const onEdgesChangeWrapped = useCallback((changes: EdgeChange[]) => { if (changes.some((c) => c.type === 'remove')) takeSnapshot(); onEdgesChange(changes); }, [onEdgesChange, takeSnapshot]);
   const onNodeDragStart = useCallback(() => { takeSnapshot(); }, [takeSnapshot]);
-  const handleSetActiveNodes = useCallback((ids: string[]) => { setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, active: ids.includes(n.id) } }))); }, [setNodes]);
+  const handleSetActiveNodes = useCallback((ids: string[]) => { 
+    setNodes((nds) => nds.map((n) => {
+      const isActive = ids.includes(n.id);
+      const currentUsageCount = n.data.usageCount || 0;
+      return {
+        ...n, 
+        data: { 
+          ...n.data, 
+          active: isActive,
+          // Increment usage count when node becomes active
+          usageCount: isActive ? currentUsageCount + 1 : currentUsageCount
+        } 
+      };
+    })); 
+  }, [setNodes]);
+
+  // Function to update usage count for a specific node (for integration/mock data access)
+  const handleUpdateNodeUsage = useCallback((nodeId: string) => {
+    setNodes((nds) => nds.map((n) => {
+      if (n.id === nodeId) {
+        const currentUsageCount = n.data.usageCount || 0;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            usageCount: currentUsageCount + 1
+          }
+        };
+      }
+      return n;
+    }));
+  }, [setNodes]);
 
   const augmentNodeData = useCallback((node: AppNode): AppNode => {
     const baseHandlers = {
@@ -268,6 +302,22 @@ const WorkflowEditor: React.FC = () => {
       const pane = reactFlowWrapper.current?.getBoundingClientRect();
       if (pane) setMenu({ type: 'edge', id: edge.id, top: event.clientY - pane.top, left: event.clientX - pane.left });
     }, [setMenu]);
+
+  const onEdgeClick = useCallback(async (event: React.MouseEvent, edge: Edge) => {
+      event.preventDefault();
+      event.stopPropagation();
+      
+      // Get node labels for better display
+      const fromNode = nodes.find(n => n.id === edge.source);
+      const toNode = nodes.find(n => n.id === edge.target);
+      
+      setSelectedConnection({ 
+        id: edge.id, 
+        from: fromNode?.data?.label || edge.source, 
+        to: toNode?.data?.label || edge.target 
+      });
+      setMenu(null); // Close context menu if open
+    }, [nodes]);
 
   const onPaneClick = useCallback(() => setMenu(null), [setMenu]);
 
@@ -491,15 +541,41 @@ const WorkflowEditor: React.FC = () => {
                 className="bg-slate-50/50"
                 connectOnClick={false}
                 connectionMode={ConnectionMode.Loose}
-                defaultEdgeOptions={{ type: 'default', animated: true, style: { strokeWidth: 2, stroke: '#64748b' } }}
+                defaultEdgeOptions={{ 
+                  type: 'default', 
+                  animated: true, 
+                  style: { 
+                    strokeWidth: 2.5, 
+                    stroke: '#64748b',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                  },
+                  markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' }
+                }}
                 connectionLineType={ConnectionLineType.Bezier}
                 onNodeContextMenu={onNodeContextMenu}
                 onEdgeContextMenu={onEdgeContextMenu}
+                onEdgeClick={onEdgeClick}
                 onPaneClick={onPaneClick}
             >
                 <Controls showInteractive={false} className="shadow-lg border-none" />
                 <MiniMap zoomable pannable className="shadow-lg rounded-xl border-2 border-white" nodeStrokeWidth={3} nodeColor="#cbd5e1" maskColor="rgba(241, 245, 249, 0.7)" />
                 <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5e1" />
+                
+                {/* Hint for clickable connections */}
+                {edges.length > 0 && !selectedConnection && (
+                  <Panel position="bottom-center" className="pointer-events-none z-10">
+                    <div className="bg-gradient-to-r from-indigo-600 to-purple-600 backdrop-blur-sm text-white px-6 py-3 rounded-xl shadow-2xl text-sm font-semibold flex items-center gap-3 animate-bounce">
+                      <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center">
+                        <ArrowRight className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="font-bold">Click any connection to configure routing rules</div>
+                        <div className="text-xs text-indigo-100 font-normal mt-0.5">Set up intent-based routing for smarter call handling</div>
+                      </div>
+                    </div>
+                  </Panel>
+                )}
                 
                 {menu && (
                     <ContextMenu
@@ -652,9 +728,31 @@ const WorkflowEditor: React.FC = () => {
                     existingConnections={calendarConnections}
                 />
 
+                {/* Connection Details Panel */}
+                {selectedConnection && (
+                    <ConnectionDetailsPanel
+                        connectionId={selectedConnection.id}
+                        fromNode={selectedConnection.from}
+                        toNode={selectedConnection.to}
+                        onClose={() => setSelectedConnection(null)}
+                        onSave={(card: ConnectionContextCard) => {
+                            // Context card is saved by the panel, just close
+                            setSelectedConnection(null);
+                        }}
+                    />
+                )}
+
             </ReactFlow>
         </div>
-        <TestPanel nodes={nodes} edges={edges} setEdges={setEdges} onSetActiveNodes={handleSetActiveNodes} onSetNodeError={(id, err) => setNodes((nds) => nds.map(n => n.id === id ? { ...n, data: { ...n.data, error: err } } : n))} onClearNodeErrors={() => setNodes((nds) => nds.map(n => ({ ...n, data: { ...n.data, error: undefined } })))} />
+        <TestPanel 
+          nodes={nodes} 
+          edges={edges} 
+          setEdges={setEdges} 
+          onSetActiveNodes={handleSetActiveNodes}
+          onUpdateNodeUsage={handleUpdateNodeUsage}
+          onSetNodeError={(id, err) => setNodes((nds) => nds.map(n => n.id === id ? { ...n, data: { ...n.data, error: err } } : n))} 
+          onClearNodeErrors={() => setNodes((nds) => nds.map(n => ({ ...n, data: { ...n.data, error: undefined } })))} 
+        />
     </div>
   );
 };

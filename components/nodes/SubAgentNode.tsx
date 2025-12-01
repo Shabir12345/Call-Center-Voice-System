@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { SubAgentNodeData, AgentParameter, DatabaseConfig, VoiceSettings } from '../../types';
-import { Bot, Shield, ArrowRight, Briefcase, Trash2, AlertCircle, Database, ChevronDown, ChevronRight, Plus, Code, Brackets, Link, Settings, Gauge, Mic, Volume2, Target, Award, Check } from 'lucide-react';
+import { Bot, Shield, ArrowRight, Briefcase, Trash2, AlertCircle, Database, ChevronDown, ChevronRight, Plus, Code, Brackets, Link, Settings, Gauge, Mic, Volume2, Target, Award, Check, Activity } from 'lucide-react';
 import { HelpTip } from '../ui/HelpTip';
 import { isNotEmpty, isValidJson } from '../../utils/validators';
 import { DatabaseConfigPanel } from '../panels/DatabaseConfigPanel';
@@ -78,12 +78,18 @@ const SubAgentNode: React.FC<NodeProps<SubAgentNodeData>> = ({ data, id }) => {
              {isGoal ? <Target size={16} /> : <Bot size={16} />}
           </div>
           <div>
-            <div className="font-bold text-slate-800 text-xs">Tool Agent</div>
+            <div className="font-bold text-slate-800 text-xs">{localAgentName || 'Tool Agent'}</div>
             <div className={`text-[10px] font-medium ${isGoal ? 'text-amber-500' : 'text-emerald-500'}`}>{isGoal ? 'Success Trigger' : 'Execution Unit'}</div>
           </div>
         </div>
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
             {isActive && !isError && <span className="text-[9px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-bold animate-pulse flex items-center gap-1"><Bot size={10}/> RUNNING</span>}
+            {data.usageCount !== undefined && data.usageCount > 0 && (
+              <div className="flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full text-[9px] font-bold" title="Usage count in current conversation">
+                <Activity size={10} />
+                {data.usageCount}
+              </div>
+            )}
             <button className={`${showDatabase ? 'text-blue-600 bg-blue-50' : 'text-slate-400 hover:text-blue-500'} p-1.5 rounded-md transition-colors`} onClick={() => setShowDatabase(!showDatabase)}>
                 <Database size={14} />
             </button>

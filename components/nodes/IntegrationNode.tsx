@@ -76,6 +76,12 @@ const IntegrationNode: React.FC<NodeProps<IntegrationNodeData>> = ({ data, id })
         </div>
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
             {isActive && !isError && <span className="text-[9px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-bold animate-pulse flex items-center gap-1"><Activity size={10}/> BUSY</span>}
+            {data.usageCount !== undefined && data.usageCount > 0 && (
+              <div className="flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full text-[9px] font-bold" title="Usage count in current conversation">
+                <Activity size={10} />
+                {data.usageCount}
+              </div>
+            )}
             <button className={`${showDatabase ? 'text-blue-600 bg-blue-50' : 'text-slate-400 hover:text-blue-500'} p-1.5 rounded-md transition-colors`} onClick={() => setShowDatabase(!showDatabase)}>
                 <Database size={14} />
             </button>

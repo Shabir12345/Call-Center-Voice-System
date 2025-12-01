@@ -137,15 +137,26 @@ export class ReservationAgentModule extends SubAgentModule {
       };
     }
 
+    // Return full reservation data for storage in session memory
     return {
       status: 'success',
       data: {
-        reservation: reservationData
+        reservation: reservationData,
+        // Include all details for easy reference
+        reservation_number: reservationData.number,
+        room_type: reservationData.room_type,
+        check_in: reservationData.check_in,
+        check_out: reservationData.check_out,
+        guest_name: reservationData.guest_name,
+        total_amount: reservationData.total_amount,
+        currency: reservationData.currency,
+        status: reservationData.status
       },
       metadata: {
         source: 'direct',
         confidence: 1.0,
-        suggestedActions: ['view_details', 'modify_reservation']
+        suggestedActions: ['view_details', 'modify_reservation'],
+        shouldStoreInMemory: true // Flag to indicate this should be stored
       }
     };
   }
@@ -258,24 +269,111 @@ export class ReservationAgentModule extends SubAgentModule {
 
   /**
    * Simulate getting reservation data
+   * Enhanced to work with more flexible inputs and provide better mock data
    */
   private async getReservationData(
     reservationNumber: string,
     fullName: string
   ): Promise<any | null> {
+    // Log the attempt to access mock data
+    this.logger.log({
+      type: 'sub_agent_action',
+      from: this.config.agentId,
+      message: `Accessing reservation data: ${reservationNumber}, ${fullName}`,
+      metadata: {
+        action: 'get_reservation_data',
+        reservationNumber,
+        fullName
+      }
+    });
+
     // In production, this would call external API/database
-    // For now, simulate with mock data
-    if (reservationNumber === 'ABC123' && fullName.toLowerCase().includes('doe')) {
-      return {
+    // For now, simulate with mock data - more flexible matching
+    const normalizedReservationNumber = reservationNumber?.toUpperCase().trim();
+    const normalizedFullName = fullName?.toLowerCase().trim() || '';
+
+    // Mock data database - can be expanded
+    const mockReservations: Record<string, any> = {
+      'ABC123': {
         number: 'ABC123',
         date: '2025-12-01',
         status: 'confirmed',
         guest_name: 'John Doe',
         room_type: 'Deluxe Suite',
         check_in: '2025-12-01T15:00:00Z',
-        check_out: '2025-12-05T11:00:00Z'
-      };
+        check_out: '2025-12-05T11:00:00Z',
+        total_amount: 500.00,
+        currency: 'USD'
+      },
+      'XYZ789': {
+        number: 'XYZ789',
+        date: '2025-12-15',
+        status: 'confirmed',
+        guest_name: 'Jane Smith',
+        room_type: 'Standard Room',
+        check_in: '2025-12-15T14:00:00Z',
+        check_out: '2025-12-18T11:00:00Z',
+        total_amount: 300.00,
+        currency: 'USD'
+      },
+      'DEF456': {
+        number: 'DEF456',
+        date: '2025-11-20',
+        status: 'confirmed',
+        guest_name: 'Bob Johnson',
+        room_type: 'Executive Suite',
+        check_in: '2025-11-20T16:00:00Z',
+        check_out: '2025-11-25T11:00:00Z',
+        total_amount: 750.00,
+        currency: 'USD'
+      }
+    };
+
+    // Try exact match first
+    if (normalizedReservationNumber && mockReservations[normalizedReservationNumber]) {
+      const reservation = mockReservations[normalizedReservationNumber];
+      // Check if name matches (flexible matching)
+      const reservationGuestName = reservation.guest_name.toLowerCase();
+      if (!normalizedFullName || 
+          reservationGuestName.includes(normalizedFullName) || 
+          normalizedFullName.includes(reservationGuestName.split(' ')[0]) ||
+          normalizedFullName.includes(reservationGuestName.split(' ')[1])) {
+        this.logger.log({
+          type: 'sub_agent_action',
+          from: this.config.agentId,
+          message: `Found reservation: ${normalizedReservationNumber}`,
+          metadata: { success: true, reservationNumber: normalizedReservationNumber }
+        });
+        return reservation;
+      }
     }
+
+    // If no exact match but we have a reservation number, try partial name matching
+    if (normalizedReservationNumber && normalizedFullName) {
+      // Try to find by name similarity
+      for (const [num, reservation] of Object.entries(mockReservations)) {
+        const reservationGuestName = reservation.guest_name.toLowerCase();
+        if (reservationGuestName.includes(normalizedFullName) || 
+            normalizedFullName.includes(reservationGuestName.split(' ')[0])) {
+          this.logger.log({
+            type: 'sub_agent_action',
+            from: this.config.agentId,
+            message: `Found reservation by name match: ${num}`,
+            metadata: { success: true, reservationNumber: num, matchedByName: true }
+          });
+          return reservation;
+        }
+      }
+    }
+
+    // Log that no reservation was found
+    this.logger.log({
+      type: 'sub_agent_action',
+      from: this.config.agentId,
+      message: `No reservation found for: ${normalizedReservationNumber || 'N/A'}, ${normalizedFullName || 'N/A'}`,
+      metadata: { success: false, reservationNumber: normalizedReservationNumber, fullName: normalizedFullName }
+    });
+
     return null;
   }
 

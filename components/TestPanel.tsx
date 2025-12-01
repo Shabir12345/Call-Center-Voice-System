@@ -25,12 +25,16 @@
  * - Detailed logging for debugging
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Phone, Mic, Square, Play, Pause, Volume2, Activity, MessageSquare, AlertTriangle, Clock, Download, Coins, Zap, CheckCircle2, Target, ShieldAlert, ChevronDown, ChevronRight, ArrowRightLeft, Network, Bot, User, Type } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, Suspense, lazy } from 'react';
+import { CallLogs, LogEntry as CallLogEntry } from './ui/CallLogs';
+import { VoiceControls } from './ui/VoiceControls';
+import { MetricsDisplay } from './ui/MetricsDisplay';
+import { Phone, Mic, Square, Play, Pause, Volume2, Activity, MessageSquare, AlertTriangle, Clock, Download, Coins, Zap, CheckCircle2, Target, ShieldAlert, ChevronDown, ChevronRight, ArrowRightLeft, Network, Bot, User, Type, Brain, FileJson } from 'lucide-react';
 import { GeminiClient, ToolCallResponse } from '../utils/geminiClient';
 import { AppNode, Edge, NodeType, RouterNodeData, SubAgentNodeData, IntegrationNodeData, DepartmentNodeData, CommunicationConfig, AgentMessage, ConversationContext } from '../types';
 import { GoogleGenAI, Chat, GenerateContentResponse, Part } from "@google/genai";
 import { validateSubAgentResponse, normalizeSubAgentResponse, transformResponseForMaster, withTimeout, withRetry, isRetryableError } from '../utils/responseValidator';
+import { ErrorCode, createErrorResponse } from '../utils/errorHandling';
 import { CommunicationManager } from '../utils/agentCommunication';
 import { CommunicationMonitor } from '../utils/communicationMonitor';
 import { createMessage } from '../utils/communicationProtocols';
@@ -44,19 +48,26 @@ import { StateManager } from '../utils/stateManager';
 import { SessionManager } from '../utils/sessionManager';
 import { AlertManager } from '../utils/alerting';
 import { DashboardProvider } from '../utils/dashboard';
-import ObservabilityPanel from './ObservabilityPanel';
-import SystemStatusPanel from './SystemStatusPanel';
+// Lazy load heavy observability components for better initial bundle size
+const ObservabilityPanel = lazy(() => import('./ObservabilityPanel'));
+const SystemStatusPanel = lazy(() => import('./SystemStatusPanel'));
+const SessionMemoryPanel = lazy(() => import('./SessionMemoryPanel'));
 import { TestPanelAdapter } from '../utils/testPanelAdapter';
+import { ToolExecutor } from '../utils/toolExecutor';
 import { ConfigValidator } from '../utils/configValidator';
 import { initializeSecurity } from '../utils/securityHeaders';
 import { globalAuditLogger } from '../utils/auditLogger';
 import { AnomalyDetector } from '../utils/anomalyDetection';
+import { CircuitBreaker, CircuitState } from '../utils/circuitBreaker';
+import { RateLimiter, RateLimitConfig } from '../utils/rateLimiter';
+import { DegradationManager, DegradationLevel, getDegradationManager } from '../utils/degradationManager';
 
 interface TestPanelProps {
   nodes: AppNode[];
   edges: Edge[];
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   onSetActiveNodes: (nodeIds: string[]) => void;
+  onUpdateNodeUsage?: (nodeId: string) => void; // Callback to update usage count
   onSetNodeError: (nodeId: string, error: string) => void;
   onClearNodeErrors: () => void;
 }
@@ -99,27 +110,71 @@ const DEFAULT_COMM_CONFIG: CommunicationConfig = {
 
 const DebugLogItem: React.FC<{ log: LogEntry }> = ({ log }) => {
   const [expanded, setExpanded] = useState(false);
+  
+  // Determine icon and color based on log content
+  const getLogIcon = () => {
+    const text = log.text.toLowerCase();
+    if (text.includes('mock data') || text.includes('mock integration')) {
+      return { icon: FileJson, color: 'text-purple-500', bg: 'bg-purple-50 border-purple-200' };
+    }
+    if (text.includes('tool result') || text.includes('tool execution')) {
+      return { icon: Zap, color: 'text-yellow-500', bg: 'bg-yellow-50 border-yellow-200' };
+    }
+    if (text.includes('normalized') || text.includes('normalization')) {
+      return { icon: CheckCircle2, color: 'text-green-500', bg: 'bg-green-50 border-green-200' };
+    }
+    if (text.includes('error') || text.includes('failed')) {
+      return { icon: AlertTriangle, color: 'text-red-500', bg: 'bg-red-50 border-red-200' };
+    }
+    if (text.includes('sub-agent') || text.includes('department')) {
+      return { icon: Bot, color: 'text-cyan-500', bg: 'bg-cyan-50 border-cyan-200' };
+    }
+    return { icon: Network, color: 'text-slate-500', bg: 'bg-slate-100 border-slate-200' };
+  };
+  
+  const { icon: Icon, color, bg } = getLogIcon();
+  
+  // Extract key information from details for preview
+  const getPreviewInfo = () => {
+    if (!log.details) return null;
+    const details = log.details as any;
+    if (details.dataStructure) return `Structure: ${details.dataStructure}`;
+    if (details.summary) return `Summary: ${details.summary.substring(0, 50)}...`;
+    if (details.dataKeys && Array.isArray(details.dataKeys)) return `Fields: ${details.dataKeys.join(', ')}`;
+    if (details.success !== undefined) return `Success: ${details.success}`;
+    if (details.hasData !== undefined) return `Has Data: ${details.hasData}`;
+    return null;
+  };
+  
+  const previewInfo = getPreviewInfo();
+  
   return (
       <div className="flex flex-col my-1 animate-fadeIn max-w-[90%] self-center w-full">
            <div 
-              className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-md cursor-pointer hover:bg-slate-200 transition-colors"
+              className={`flex items-center gap-2 px-3 py-1.5 ${bg} border rounded-md cursor-pointer hover:opacity-80 transition-all`}
               onClick={() => setExpanded(!expanded)}
            >
-               {expanded ? <ChevronDown size={12} className="text-slate-500"/> : <ChevronRight size={12} className="text-slate-500"/>}
-               <Network size={12} className="text-slate-500" />
-               <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wide flex-1 truncate">{log.text}</span>
+               {expanded ? <ChevronDown size={12} className={color}/> : <ChevronRight size={12} className={color}/>}
+               <Icon size={12} className={color} />
+               <div className="flex-1 min-w-0">
+                   <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wide block truncate">{log.text}</span>
+                   {previewInfo && !expanded && (
+                       <span className="text-[9px] text-slate-500 italic truncate block mt-0.5">{previewInfo}</span>
+                   )}
+               </div>
                <span className="text-[9px] text-slate-400 font-mono">DEBUG</span>
            </div>
            {expanded && log.details && (
-               <div className="mt-1 ml-4 p-2 bg-slate-800 rounded-md text-slate-300 font-mono text-[10px] overflow-x-auto border border-slate-700 shadow-inner">
-                   <pre>{JSON.stringify(log.details, null, 2)}</pre>
+               <div className="mt-1 ml-4 p-3 bg-slate-800 rounded-md text-slate-300 font-mono text-[10px] overflow-x-auto border border-slate-700 shadow-inner">
+                   <div className="mb-2 text-slate-400 text-[9px] uppercase tracking-wide">Details</div>
+                   <pre className="whitespace-pre-wrap break-words">{JSON.stringify(log.details, null, 2)}</pre>
                </div>
            )}
       </div>
   );
 };
 
-const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActiveNodes, onSetNodeError, onClearNodeErrors }) => {
+const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActiveNodes, onUpdateNodeUsage, onSetNodeError, onClearNodeErrors }) => {
   const [isCallActive, setIsCallActive] = useState(false);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -131,9 +186,15 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
       successfulResolutions: 0,
       isSessionResolved: false
   });
-  // Simple architecture stats so users can SEE the multi-agent system
-  const departmentCount = nodes.filter(n => n.type === NodeType.DEPARTMENT).length;
-  const toolCount = nodes.filter(n => n.type === NodeType.SUB_AGENT).length;
+  // Simple architecture stats so users can SEE the multi-agent system - memoized for performance
+  const departmentCount = useMemo(() => 
+    nodes.filter(n => n.type === NodeType.DEPARTMENT).length, 
+    [nodes]
+  );
+  const toolCount = useMemo(() => 
+    nodes.filter(n => n.type === NodeType.SUB_AGENT).length, 
+    [nodes]
+  );
   
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
@@ -145,6 +206,10 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
   useEffect(() => {
     nodesRef.current = nodes;
     edgesRef.current = edges;
+    // Update ToolExecutor when nodes/edges change
+    if (toolExecutorRef.current) {
+      toolExecutorRef.current.updateNodesAndEdges(nodes, edges);
+    }
   }, [nodes, edges]);
 
   const geminiRef = useRef<GeminiClient | null>(null);
@@ -173,11 +238,24 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
   const alertManagerRef = useRef<AlertManager | null>(null);
   const dashboardProviderRef = useRef<DashboardProvider | null>(null);
   const [showObservability, setShowObservability] = useState(false);
+  const [showSessionMemory, setShowSessionMemory] = useState(false);
   const [simulationMode, setSimulationMode] = useState<'voice' | 'text'>('voice');
   const [selectedAppVariant, setSelectedAppVariant] = useState<string>('');
   const [textInput, setTextInput] = useState('');
   const [textSessionId] = useState(() => `text_session_${Date.now()}`);
+  const [isAgentTyping, setIsAgentTyping] = useState(false);
   const testPanelAdapterRef = useRef<TestPanelAdapter | null>(null);
+  const toolExecutorRef = useRef<ToolExecutor | null>(null);
+
+  // Resilience features (Phase 2)
+  const circuitBreakerRef = useRef<CircuitBreaker | null>(null);
+  const rateLimiterRef = useRef<RateLimiter | null>(null);
+  const degradationManagerRef = useRef<DegradationManager | null>(null);
+  const [resilienceStatus, setResilienceStatus] = useState<{
+    circuitBreaker: { state: string; stats?: any } | null;
+    rateLimit: { allowed: boolean; remaining: number; retryAfter?: number } | null;
+    degradation: DegradationLevel | null;
+  } | null>(null);
   
   // Initialize TestPanelAdapter for text mode
   useEffect(() => {
@@ -186,19 +264,45 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
     }
     
     // Initialize adapter with current nodes when nodes change
+    const masterNodeId = nodes.find(n => n.type === NodeType.ROUTER)?.id || null;
+    const callbacks = {
+      onSystemMessage: (message: string) => {
+        addLog('system', message);
+      },
+      onAgentActive: (agentId: string) => {
+        if (masterNodeId) {
+          // Track usage for master agent and sub-agent
+          if (onUpdateNodeUsage) {
+            onUpdateNodeUsage(masterNodeId);
+            onUpdateNodeUsage(agentId);
+          }
+          onSetActiveNodes([masterNodeId, agentId]);
+          // Reset after a delay
+          setTimeout(() => {
+            if (masterNodeId) {
+              onSetActiveNodes([masterNodeId]);
+            }
+          }, 2000);
+        }
+      },
+      onEdgeAnimate: (source: string, target: string) => {
+        animateEdges([{ source, target }]);
+      }
+    };
+    
     if (nodes.length > 0 && selectedAppVariant) {
-      testPanelAdapterRef.current.initializeFromNodes(nodes, selectedAppVariant).catch(err => {
+      testPanelAdapterRef.current.initializeFromNodes(nodes, selectedAppVariant, callbacks).catch(err => {
         console.error('Failed to initialize TestPanelAdapter:', err);
         addLog('system', `❌ Failed to initialize text mode: ${err.message}`);
       });
     } else if (nodes.length > 0 && simulationMode === 'text') {
       // Initialize without app variant
-      testPanelAdapterRef.current.initializeFromNodes(nodes).catch(err => {
+      testPanelAdapterRef.current.initializeFromNodes(nodes, undefined, callbacks).catch(err => {
         console.error('Failed to initialize TestPanelAdapter:', err);
         addLog('system', `❌ Failed to initialize text mode: ${err.message}`);
       });
     }
-  }, [nodes, selectedAppVariant, simulationMode]);
+  }, [nodes, selectedAppVariant, simulationMode, activeAgentId]);
 
   // Initialize communication system and observability tools
   useEffect(() => {
@@ -243,6 +347,31 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
     // Initialize tracer
     if (!tracerRef.current && loggerRef.current) {
       tracerRef.current = new Tracer(loggerRef.current);
+    }
+    
+    // Initialize ToolExecutor for shared tool execution (Phase 1.3 migration)
+    if (!toolExecutorRef.current && loggerRef.current && tracerRef.current) {
+      toolExecutorRef.current = new ToolExecutor(
+        nodesRef.current,
+        edgesRef.current,
+        {
+          timeout: DEFAULT_COMM_CONFIG.timeout.toolExecution,
+          retry: DEFAULT_COMM_CONFIG.retry,
+          logger: loggerRef.current,
+          tracer: tracerRef.current,
+          onSetActiveNodes: onSetActiveNodes,
+          onSetNodeError: onSetNodeError,
+          onUpdateNodeUsage: onUpdateNodeUsage,
+          onLog: (level, text, details) => {
+            addLog(level === 'system' ? 'system' : 'debug', text, details);
+          }
+        }
+      );
+    }
+    
+    // Update ToolExecutor when nodes/edges change
+    if (toolExecutorRef.current) {
+      toolExecutorRef.current.updateNodesAndEdges(nodesRef.current, edgesRef.current);
     }
     
     if (!commManagerRef.current) {
@@ -321,12 +450,77 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
       );
     }
 
+    // Initialize resilience features (Phase 2)
+    if (!circuitBreakerRef.current && loggerRef.current) {
+      circuitBreakerRef.current = new CircuitBreaker({
+        failureThreshold: 5,
+        resetTimeout: 60000,
+        enablePersistence: true,
+        persistenceKey: 'gemini_circuit_breaker',
+        onStateChange: (state) => {
+          if (loggerRef.current) {
+            loggerRef.current.info(`Circuit breaker state changed: ${state}`, { serviceName: 'gemini_api' });
+          }
+          updateResilienceStatus();
+        },
+        onMetric: (metric) => {
+          // Track metrics for monitoring
+        }
+      }, 'gemini_api');
+    }
+
+    if (!rateLimiterRef.current) {
+      rateLimiterRef.current = new RateLimiter({
+        maxRequests: 60,      // 60 requests
+        windowMs: 60000,      // per minute
+        burstSize: 10         // allow 10 extra as burst
+      });
+    }
+
+    if (!degradationManagerRef.current && loggerRef.current) {
+      degradationManagerRef.current = getDegradationManager({
+        logger: loggerRef.current,
+        onLevelChange: (level, reason) => {
+          if (loggerRef.current) {
+            loggerRef.current.warn(`Degradation level changed to ${DegradationLevel[level]}`, {
+              component: reason.component,
+              reason: reason.reason
+            });
+          }
+          updateResilienceStatus();
+        },
+        enableAutoRecovery: true,
+        recoveryCheckInterval: 30000
+      });
+    }
+
+    // Update resilience status periodically
+    const statusInterval = setInterval(() => {
+      updateResilienceStatus();
+    }, 5000); // Update every 5 seconds
+
     return () => {
       // Cleanup on unmount
       if (commManagerRef.current) {
         commManagerRef.current.clear();
       }
+      clearInterval(statusInterval);
+      if (degradationManagerRef.current) {
+        degradationManagerRef.current.shutdown();
+      }
     };
+  }, []);
+
+  // Update resilience status
+  const updateResilienceStatus = useCallback(() => {
+    setResilienceStatus({
+      circuitBreaker: circuitBreakerRef.current ? {
+        state: circuitBreakerRef.current.getState(),
+        stats: circuitBreakerRef.current.getStats()
+      } : null,
+      rateLimit: geminiRef.current ? geminiRef.current.getRateLimitStatus() : null,
+      degradation: degradationManagerRef.current ? degradationManagerRef.current.getLevel() : null
+    });
   }, []);
 
   useEffect(() => {
@@ -374,10 +568,12 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
     }]);
   };
 
-  const formatDuration = (seconds: number) => {
-      const mins = Math.floor(seconds / 60);
-      const secs = seconds % 60;
-      return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  // formatDuration removed - now handled by MetricsDisplay component
+
+  // Add natural thinking delay (2-5 seconds)
+  const addNaturalDelay = () => {
+    const delay = Math.random() * 3000 + 2000; // 2-5 seconds
+    return new Promise(resolve => setTimeout(resolve, delay));
   };
   
   const animateEdges = (connections: { source: string, target: string }[]) => {
@@ -492,7 +688,25 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
             if (connectedIntegration) {
                 const intData = connectedIntegration.data as IntegrationNodeData;
                 if (intData.aiInstructions) description += ` Data Source: ${intData.aiInstructions}.`;
+                
+                // Add response format information for mock data
+                if (intData.integrationType === 'mock' && intData.mockOutput) {
+                    try {
+                        const mockData = JSON.parse(intData.mockOutput);
+                        if (typeof mockData === 'object' && mockData !== null) {
+                            const keys = Object.keys(mockData);
+                            if (keys.length > 0) {
+                                description += ` The tool will return data with fields: ${keys.join(', ')}. Read ALL fields from the response.data object.`;
+                            }
+                        }
+                    } catch (e) {
+                        // Ignore parse errors in description generation
+                    }
+                }
             }
+            
+            // Add explicit response format instruction
+            description += " IMPORTANT: The tool response will have a 'result' object with 'data', 'summary', and 'structure' fields. Read the 'data' field to get all information.";
             const properties: Record<string, any> = {
                 // query: { type: "STRING", description: "The specific information or query needed." },
                 // payload: { type: "STRING", description: "JSON string containing data to write/update if applicable." }
@@ -540,6 +754,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
 
   /**
    * Executes tool logic for a SubAgentNode (Tool Agent)
+   * NOW USES SHARED ToolExecutor (Phase 1.3 Migration)
    * Handles integration with Integration Nodes (mock, REST, GraphQL)
    * Includes comprehensive error handling, timeout, and response validation
    * @param toolNodeId - ID of the tool agent node
@@ -547,183 +762,96 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
    * @returns Normalized response with data or error
    */
   const executeToolLogic = async (toolNodeId: string, args: Record<string, any>): Promise<any> => {
-      const startTime = Date.now();
-      const toolNode = nodesRef.current.find(n => n.id === toolNodeId);
-      
-      if (!toolNode) {
-          const error = { 
-              error: "Tool Node not found", 
-              errorCode: "TOOL_NODE_NOT_FOUND",
-              toolNodeId 
-          };
-          addLog('debug', 'Tool Node Not Found', error);
-          return error;
-      }
-
-      const toolData = toolNode.data as SubAgentNodeData;
-      addLog('debug', `Executing Tool: ${toolData.agentName || toolData.specialty}`, {
-          toolNodeId,
-          args,
-          timestamp: startTime
-      });
-
-      try {
-          // Check for connected Integration Node (downstream)
-          const integrationEdge = edgesRef.current.find(
-              e => e.source === toolNodeId && 
-              nodesRef.current.find(n => n.id === e.target)?.type === NodeType.INTEGRATION
+      // Use shared ToolExecutor (Phase 1.3 migration - fallback removed)
+      if (!toolExecutorRef.current) {
+          const errorResponse = createErrorResponse(
+              ErrorCode.TOOL_EXECUTOR_NOT_INITIALIZED,
+              "ToolExecutor not initialized",
+              { toolNodeId }
           );
-          const integrationNode = integrationEdge 
-              ? nodesRef.current.find(n => n.id === integrationEdge.target) 
-              : null;
-
-          if (integrationNode) {
-              const intData = integrationNode.data as IntegrationNodeData;
-              
-              // Create trace span for integration execution
-              const integrationTraceContext = tracerRef.current?.startSpan(
-                  `integration:${intData.integrationType}`,
-                  undefined,
-                  { integrationType: intData.integrationType, url: intData.url || 'N/A', toolId: toolNodeId }
-              );
-              
-              addLog('debug', `Hitting Integration: ${intData.label}`, { 
-                  type: intData.integrationType, 
-                  url: intData.url,
-                  method: intData.method || 'GET'
-              });
-              
-              // Simulate latency if configured
-              if (intData.latency && intData.latency > 0) {
-                  await new Promise(r => setTimeout(r, intData.latency));
-              }
-
-              // Execute integration based on type
-              const executeIntegration = async () => {
-                  if (intData.integrationType === 'mock') {
-                      return await executeMockIntegration(intData, args);
-                  } else if (intData.integrationType === 'rest' && intData.url) {
-                      return await executeRestIntegration(intData, args);
-                  } else if (intData.integrationType === 'graphql' && intData.graphQLQuery) {
-                      return await executeGraphQLIntegration(intData, args);
-                  } else {
-                      return {
-                          error: `Integration type ${intData.integrationType} not properly configured`,
-                          errorCode: 'INTEGRATION_CONFIG_ERROR'
-                      };
-                  }
-              };
-
-              // Execute with timeout
-              let result;
-              try {
-                  result = await withTimeout(
-                      executeIntegration(),
-                      DEFAULT_COMM_CONFIG.timeout.toolExecution,
-                      `Integration execution timeout after ${DEFAULT_COMM_CONFIG.timeout.toolExecution}ms`
-                  );
-              } finally {
-                  // End integration trace
-                  if (integrationTraceContext) {
-                      const integrationDuration = Date.now() - startTime;
-                      tracerRef.current?.endSpan(integrationTraceContext.spanId, {
-                          success: !result?.error,
-                          duration: integrationDuration,
-                          error: result?.error,
-                          errorCode: result?.errorCode
-                      });
-                  }
-              }
-
-              const duration = Date.now() - startTime;
-              const normalized = normalizeSubAgentResponse(result, 'direct', { duration });
-              
-              addLog('debug', `Tool Execution Complete`, {
-                  toolNodeId,
-                  success: normalized.success,
-                  duration,
-                  hasData: !!normalized.data
-              });
-
-              return normalized.success ? normalized.data : { 
-                  error: normalized.error,
-                  errorCode: normalized.errorCode
-              };
-          }
-
-          // Fallback: If no integration node, return a generic success
-          // This ensures the chain doesn't break even if the user didn't wire up a DB node.
-          const duration = Date.now() - startTime;
-          addLog('debug', `Tool executed without integration node`, {
-              toolNodeId,
-              duration
-          });
-          
-          return { 
-              status: "success", 
-              message: "Tool executed (Internal Mock)", 
-              details: "Connect an Integration Node to this Tool Agent to fetch real data.",
-              input_args: args 
-          };
-      } catch (error: any) {
-          const duration = Date.now() - startTime;
-          const errorMsg = error.message || 'Unknown error occurred during tool execution';
-          const errorCode = error.message?.includes('timeout') ? 'TOOL_TIMEOUT' : 'TOOL_EXECUTION_ERROR';
-          
-          console.error("Tool Execution Error:", error);
-          addLog('debug', 'Tool Execution Error', {
-              toolNodeId,
-              error: errorMsg,
-              errorCode,
-              stack: error.stack,
-              duration
-          });
-          
-          onSetNodeError(toolNodeId, errorMsg);
-          
+          addLog('system', 'ToolExecutor not initialized - system error', errorResponse);
           return {
-              error: errorMsg,
-              errorCode,
+              success: false,
+              error: errorResponse.message,
+              errorCode: errorResponse.code,
               toolNodeId
           };
       }
-  };
 
-  /**
-   * Executes a mock integration
-   */
-  const executeMockIntegration = async (intData: IntegrationNodeData, args: Record<string, any>): Promise<any> => {
       try {
-          if (!intData.mockOutput) {
-              return {
-                  error: "Mock integration has no output data configured",
-                  errorCode: "MOCK_NO_OUTPUT"
-              };
-          }
-
-          const mockData = JSON.parse(intData.mockOutput);
+          const result = await toolExecutorRef.current.executeTool(toolNodeId, args);
+          return result;
+      } catch (error: any) {
+          const errorMsg = error.message || 'Unknown error occurred during tool execution';
+          const errorCode = error.message?.includes('timeout') ? ErrorCode.TOOL_TIMEOUT : ErrorCode.TOOL_EXECUTION_ERROR;
+          const errorResponse = createErrorResponse(errorCode, errorMsg, {
+              toolNodeId,
+              stack: error.stack
+          });
           
-          // Validate parsed JSON
-          if (typeof mockData !== 'object') {
-              return {
-                  error: "Mock output must be a JSON object",
-                  errorCode: "MOCK_INVALID_FORMAT"
-              };
-          }
-
-          return { 
-              status: "success", 
-              source: "mock_db", 
-              data: mockData, 
-              args_received: args 
-          };
-      } catch (e: any) {
-          return { 
-              error: `Integration Node has invalid JSON mock output: ${e.message}`, 
-              errorCode: "MOCK_JSON_PARSE_ERROR"
+          console.error("ToolExecutor Error:", error);
+          addLog('system', `Tool execution failed: ${errorResponse.userFriendlyMessage || errorResponse.message}`, {
+              toolNodeId,
+              error: errorResponse.message,
+              errorCode: errorResponse.code,
+              retryable: errorResponse.retryable,
+              stack: error.stack
+          });
+          
+          onSetNodeError(toolNodeId, errorResponse.userFriendlyMessage || errorResponse.message);
+          
+          return {
+              success: false,
+              error: errorResponse.userFriendlyMessage || errorResponse.message,
+              errorCode: errorResponse.code,
+              toolNodeId,
+              retryable: errorResponse.retryable
           };
       }
   };
+
+  // Legacy fallback code removed (Phase 1.3 migration complete)
+  // All tool execution now goes through ToolExecutor which uses IntegrationExecutor
+  // This ensures consistent behavior and shared utilities across the system
+
+  /**
+   * Helper function to generate a summary of data structure for AI
+   */
+  const generateDataSummary = (data: any, depth: number = 0, maxDepth: number = 2): string => {
+      if (depth > maxDepth) return '...';
+      if (data === null || data === undefined) return 'null';
+      if (typeof data === 'string') return `"${data.substring(0, 50)}${data.length > 50 ? '...' : ''}"`;
+      if (typeof data === 'number' || typeof data === 'boolean') return String(data);
+      if (Array.isArray(data)) {
+          if (data.length === 0) return '[]';
+          return `[${data.length} items: ${generateDataSummary(data[0], depth + 1, maxDepth)}]`;
+      }
+      if (typeof data === 'object') {
+          const keys = Object.keys(data);
+          if (keys.length === 0) return '{}';
+          const preview = keys.slice(0, 5).map(k => `${k}: ${generateDataSummary(data[k], depth + 1, maxDepth)}`).join(', ');
+          return keys.length > 5 ? `{${preview}, ...}` : `{${preview}}`;
+      }
+      return String(data);
+  };
+
+  /**
+   * Helper function to describe data structure
+   */
+  const describeDataStructure = (data: any): string => {
+      if (data === null || data === undefined) return 'null';
+      if (typeof data !== 'object') return typeof data;
+      if (Array.isArray(data)) {
+          return `array[${data.length}]${data.length > 0 ? ` of ${describeDataStructure(data[0])}` : ''}`;
+      }
+      const keys = Object.keys(data);
+      return `object with fields: ${keys.join(', ')}`;
+  };
+
+  // Legacy integration functions removed (Phase 1.3 Phase C cleanup)
+  // All integration execution now goes through ToolExecutor → IntegrationExecutor
+  // These functions are no longer used and have been removed to reduce code duplication
+
 
   /**
    * Executes a REST API integration
@@ -939,8 +1067,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
           timestamp: startTime
       });
       
+      // Highlight master agent and sub-agent with edge animation
       onSetActiveNodes([activeAgentId || '', departmentNodeId]);
       animateEdges([{ source: activeAgentId || '', target: departmentNodeId }]);
+      
+      // Keep highlighting visible for at least 1 second
+      setTimeout(() => {
+          // Highlight persists
+      }, 1000);
 
       // Register department agent with CommunicationManager for bidirectional communication
       const masterAgentId = activeAgentId || '';
@@ -978,7 +1112,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
           const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
           
           // Use department's system prompt if available, otherwise use default
-          // Enhanced with bidirectional communication capabilities
+          // Enhanced with bidirectional communication capabilities and explicit tool response reading instructions
           const systemPrompt = data.systemPrompt || `
                     You are the ${data.agentName} Backend Logic Advisor.
                     Your goal is to answer the Master Agent's query: "${initialQuery}".
@@ -988,14 +1122,40 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                     - If you need more information, clearly state what you need
                     - You can request the Master Agent to ask the user for specific details
                     
+                    HOW TO READ TOOL RESPONSES:
+                    When you call a tool, you will receive a response with this structure:
+                    {
+                      "result": {
+                        "success": true/false,
+                        "data": { ... },  // THIS IS THE ACTUAL DATA - READ ALL FIELDS HERE
+                        "summary": "...",  // Quick overview of what's in the data
+                        "structure": "...",  // Description of the data structure
+                        "error": "...",  // Only present if success is false
+                        "errorCode": "..."  // Only present if there's an error
+                      }
+                    }
+                    
+                    CRITICAL INSTRUCTIONS FOR READING DATA:
+                    1. The 'data' field contains the actual information you need - ALWAYS read this field
+                    2. If 'data' is an object, read ALL fields in it (e.g., data.reservationNumber, data.status, data.date, etc.)
+                    3. Use the 'summary' field to quickly understand what data is available
+                    4. The 'structure' field tells you what type of data it is (object, array, etc.)
+                    5. If success is false, check the 'error' and 'errorCode' fields
+                    
+                    EXAMPLE OF READING TOOL RESPONSE:
+                    If tool returns: { "result": { "success": true, "data": { "reservationNumber": "ABC123", "status": "confirmed", "date": "2025-12-01" } } }
+                    You should read: data.reservationNumber = "ABC123", data.status = "confirmed", data.date = "2025-12-01"
+                    Then summarize: "Reservation ABC123 is confirmed for December 1, 2025"
+                    
                     RULES:
                     1. You have tools. USE THEM IMMEDIATELY. Do not ask for clarification unless absolutely necessary.
-                    2. Your output must be a direct instruction to the Master Agent on what to say to the user.
-                    3. If you find data, summarize it clearly.
-                    4. If you need clarification, format it as: "CLARIFY: [your question]"
-                    5. If you need the user's input, format it as: "ASK_USER: [what to ask]"
+                    2. When you receive tool results, ALWAYS read the 'data' field completely - extract ALL information from it
+                    3. Your output must be a direct instruction to the Master Agent on what to say to the user.
+                    4. If you find data, summarize ALL relevant details clearly - don't miss any important fields
+                    5. If you need clarification, format it as: "CLARIFY: [your question]"
+                    6. If you need the user's input, format it as: "ASK_USER: [what to ask]"
                     
-                    Start by checking which tool can answer the query.
+                    Start by checking which tool can answer the query, then call it and READ ALL DATA from the response.
              `;
           
           const chat: Chat = ai.chats.create({
@@ -1038,11 +1198,24 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                       if (targetNode && edgesRef.current.some(e => e.source === departmentNodeId && e.target === targetNode.id)) {
                           const toolAgentId = targetNode.id;
                           
-                          // Visual Feedback
-                          onSetActiveNodes([departmentNodeId, toolAgentId]);
-                          animateEdges([{ source: departmentNodeId, target: toolAgentId }]);
+                          // Visual Feedback - highlight department, tool agent, and any connected integration
+                          const integrationEdge = edgesRef.current.find(
+                              e => e.source === toolAgentId && 
+                              nodesRef.current.find(n => n.id === e.target)?.type === NodeType.INTEGRATION
+                          );
+                          const integrationNodeId = integrationEdge?.target;
+                          const nodesToHighlight = [departmentNodeId, toolAgentId];
+                          if (integrationNodeId) {
+                              nodesToHighlight.push(integrationNodeId);
+                          }
+                          onSetActiveNodes(nodesToHighlight);
+                          animateEdges([
+                              { source: departmentNodeId, target: toolAgentId },
+                              ...(integrationNodeId ? [{ source: toolAgentId, target: integrationNodeId }] : [])
+                          ]);
                           addLog('debug', `Sub-Agent Calling Tool: ${toolName}`, { 
                               toolId: toolAgentId,
+                              integrationNodeId,
                               args: args,
                               callId: call.id
                           });
@@ -1055,23 +1228,66 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                                   `Tool execution timeout after ${DEFAULT_COMM_CONFIG.timeout.toolExecution}ms`
                               );
                               
-                              addLog('debug', `Tool Result`, { 
+                              // Log detailed tool result before formatting
+                              addLog('debug', `Tool Result (Before Formatting)`, { 
                                   toolName,
-                                  result: toolResult,
-                                  success: !toolResult.error
+                                  toolAgentId,
+                                  rawResult: toolResult,
+                                  success: !toolResult.error,
+                                  hasData: !!toolResult.data,
+                                  dataType: toolResult.data ? typeof toolResult.data : 'null',
+                                  summary: toolResult.summary || 'N/A',
+                                  structure: toolResult.structure || 'N/A',
+                                  dataPreview: toolResult.data ? JSON.stringify(toolResult.data).substring(0, 300) : 'null'
+                              });
+
+                              // Format tool result in AI-friendly way
+                              // The AI needs clear access to the data
+                              const formattedResult = {
+                                  success: toolResult.success !== false && !toolResult.error,
+                                  data: toolResult.data || toolResult,  // Ensure data is accessible
+                                  summary: toolResult.summary || (toolResult.data ? generateDataSummary(toolResult.data) : 'No data returned'),
+                                  structure: toolResult.structure || (toolResult.data ? describeDataStructure(toolResult.data) : 'unknown'),
+                                  ...(toolResult.error ? { error: toolResult.error, errorCode: toolResult.errorCode } : {})
+                              };
+
+                              // Log formatted result that will be sent to sub-agent
+                              addLog('debug', `Tool Result (Formatted for Sub-Agent)`, {
+                                  toolName,
+                                  toolAgentId,
+                                  formattedResult,
+                                  formattedDataPreview: formattedResult.data ? JSON.stringify(formattedResult.data).substring(0, 300) : 'null',
+                                  willBeSentToSubAgent: true
                               });
 
                               parts.push({ 
                                   functionResponse: {
                                       id: call.id,
                                       name: toolName,
-                                      response: { result: toolResult }
+                                      response: { 
+                                          result: formattedResult,
+                                          // Add explicit instruction for AI
+                                          _instruction: "The 'data' field contains the actual data. Use 'summary' to understand what's available. Read all fields in the data object."
+                                      }
                                   }
+                              });
+                              
+                              // Log that response was added to parts
+                              addLog('debug', `Tool Response Added to Sub-Agent`, {
+                                  toolName,
+                                  callId: call.id,
+                                  responseAdded: true
                               });
                           } catch (toolError: any) {
                               const errorMsg = toolError.message || 'Tool execution failed';
+                              const errorResponse = createErrorResponse(
+                                  ErrorCode.TOOL_EXECUTION_FAILED,
+                                  errorMsg,
+                                  { toolName, callId: call.id }
+                              );
                               addLog('debug', `Tool Error: ${toolName}`, { 
-                                  error: errorMsg,
+                                  error: errorResponse.message,
+                                  errorCode: errorResponse.code,
                                   callId: call.id
                               });
                               
@@ -1081,8 +1297,8 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                                       name: toolName,
                                       response: { 
                                           result: { 
-                                              error: errorMsg,
-                                              errorCode: 'TOOL_EXECUTION_FAILED'
+                                              error: errorResponse.userFriendlyMessage || errorResponse.message,
+                                              errorCode: errorResponse.code
                                           } 
                                       }
                                   }
@@ -1090,8 +1306,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                           }
                       } else {
                           const errorMsg = `Tool disconnected or not found in workflow: ${toolName}`;
+                          const errorResponse = createErrorResponse(
+                              ErrorCode.TOOL_NOT_FOUND,
+                              errorMsg,
+                              { toolName, callId: call.id }
+                          );
                           addLog('debug', `Tool Not Found`, { 
                               toolName,
+                              errorCode: errorResponse.code,
                               callId: call.id
                           });
                           
@@ -1101,8 +1323,8 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                                   name: toolName,
                                   response: { 
                                       result: { 
-                                          error: errorMsg,
-                                          errorCode: 'TOOL_NOT_FOUND'
+                                          error: errorResponse.userFriendlyMessage || errorResponse.message,
+                                          errorCode: errorResponse.code
                                       } 
                                   }
                               }
@@ -1110,19 +1332,64 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                       }
                   }
                   
+                  // Log what we're sending back to sub-agent
+                  addLog('debug', `Sending Tool Responses to Sub-Agent`, {
+                      departmentNodeId,
+                      partsCount: parts.length,
+                      partsPreview: parts.map(p => ({
+                          hasFunctionResponse: !!p.functionResponse,
+                          functionName: p.functionResponse?.name,
+                          callId: p.functionResponse?.id
+                      }))
+                  });
+                  
                   // Send the tool responses back to the Department Agent
                   result = await chat.sendMessage({ message: parts });
                   calls = result.functionCalls;
+                  
+                  // Log sub-agent's response after receiving tool results
+                  addLog('debug', `Sub-Agent Response After Tool Results`, {
+                      departmentNodeId,
+                      hasNewCalls: !!calls && calls.length > 0,
+                      newCallsCount: calls?.length || 0,
+                      hasText: !!result.text,
+                      textPreview: result.text ? result.text.substring(0, 200) : 'null'
+                  });
               }
               
               // Extract final response - check multiple possible locations
               let finalAnswer: string | null = null;
               
+              // Log raw result structure
+              addLog('debug', `Sub-Agent Final Response Extraction`, {
+                  departmentNodeId,
+                  hasText: !!result.text,
+                  hasCandidates: !!result.candidates,
+                  candidatesLength: result.candidates?.length || 0,
+                  resultStructure: Object.keys(result)
+              });
+              
               // Try to get text from result
               if (result.text) {
                   finalAnswer = result.text;
+                  addLog('debug', `Extracted Final Answer from result.text`, {
+                      departmentNodeId,
+                      answerLength: finalAnswer.length,
+                      answerPreview: finalAnswer.substring(0, 200)
+                  });
               } else if (result.candidates?.[0]?.content?.parts?.[0]?.text) {
                   finalAnswer = result.candidates[0].content.parts[0].text;
+                  addLog('debug', `Extracted Final Answer from result.candidates[0].content.parts[0].text`, {
+                      departmentNodeId,
+                      answerLength: finalAnswer.length,
+                      answerPreview: finalAnswer.substring(0, 200)
+                  });
+              } else {
+                  addLog('debug', `Could not extract text from result`, {
+                      departmentNodeId,
+                      resultKeys: Object.keys(result),
+                      resultPreview: JSON.stringify(result).substring(0, 500)
+                  });
               }
               
               // Validate response
@@ -1130,8 +1397,10 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
               
               if (!validation.isValid) {
                   addLog('debug', 'Response Validation Failed', {
+                      departmentNodeId,
                       error: validation.error,
                       errorCode: validation.errorCode,
+                      finalAnswer: finalAnswer?.substring(0, 200),
                       result: result
                   });
                   
@@ -1141,6 +1410,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
               }
               
               const duration = Date.now() - startTime;
+              
+              // Log final answer before normalization
+              addLog('debug', `Sub-Agent Final Answer (Before Normalization)`, {
+                  departmentNodeId,
+                  finalAnswer: finalAnswer?.substring(0, 500),
+                  answerLength: finalAnswer?.length || 0,
+                  duration
+              });
               
               // Check for bidirectional communication patterns
               if (finalAnswer) {
@@ -1196,6 +1473,16 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                   'session',
                   { duration }
               );
+              
+              // Log normalized response
+              addLog('debug', `Sub-Agent Response Normalized`, {
+                  departmentNodeId,
+                  success: normalized.success,
+                  hasInstructions: !!normalized.data?.instructions,
+                  instructionsPreview: normalized.data?.instructions?.substring(0, 200),
+                  error: normalized.error,
+                  errorCode: normalized.errorCode
+              });
               
               // Log communication event
               if (commMonitorRef.current && masterAgentId) {
@@ -1277,12 +1564,19 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
       } catch (error: any) {
           const duration = Date.now() - startTime;
           const errorMsg = error.message || 'Unknown error occurred';
-          const errorCode = error.message?.includes('timeout') ? 'TIMEOUT' : 'EXECUTION_ERROR';
+          const errorCode = error.message?.includes('timeout') ? ErrorCode.REQUEST_TIMEOUT : ErrorCode.PROCESSING_ERROR;
+          const errorResponse = createErrorResponse(errorCode, errorMsg, {
+              departmentNodeId,
+              agentName: data.agentName,
+              duration,
+              stack: error.stack
+          });
           
           console.error("Sub-Agent Logic Error:", error);
           addLog('debug', 'Sub-Agent Error', { 
-              error: errorMsg,
-              errorCode,
+              error: errorResponse.message,
+              errorCode: errorResponse.code,
+              retryable: errorResponse.retryable,
               stack: error.stack,
               duration
           });
@@ -1297,30 +1591,30 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                   timestamp: Date.now(),
                   duration,
                   success: false,
-                  error: errorMsg,
-                  errorCode,
+                  error: errorResponse.message,
+                  errorCode: errorResponse.code,
                   threadId: context.threadId
               });
           }
           
-          onSetNodeError(departmentNodeId, errorMsg);
-          
-          // Return user-friendly error message
-          if (errorCode === 'TIMEOUT') {
-              return `The ${data.agentName} department took too long to respond. Please try again with a simpler request.`;
-          }
+          onSetNodeError(departmentNodeId, errorResponse.userFriendlyMessage || errorResponse.message);
           
           // End sub-agent trace with error
           if (subAgentTraceContext) {
               tracerRef.current?.endSpan(subAgentTraceContext.spanId, {
                   success: false,
                   duration,
-                  error: errorMsg,
-                  errorCode
+                  error: errorResponse.message,
+                  errorCode: errorResponse.code
               });
           }
           
-          return `I encountered an error while processing your request with ${data.agentName}. Error: ${errorMsg}. Please try again.`;
+          // Return user-friendly error message
+          if (errorCode === ErrorCode.REQUEST_TIMEOUT) {
+              return `The ${data.agentName} department took too long to respond. Please try again with a simpler request.`;
+          }
+          
+          return `I encountered an error while processing your request with ${data.agentName}. ${errorResponse.userFriendlyMessage || errorResponse.message}`;
       } finally {
           // Cleanup: Unregister agent when done
           if (commManagerRef.current) {
@@ -1342,13 +1636,36 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
     }
     
     const tools = generateToolsForAgent(agentNodeId);
+    
+    // Create GeminiClient with resilience features (Phase 2)
     const client = new GeminiClient({
         apiKey: process.env.API_KEY,
         voiceName: agentData.voiceId || 'Zephyr',
         systemInstruction: systemPrompt,
-        tools: tools
+        tools: tools,
+        // Add resilience features
+        rateLimiter: rateLimiterRef.current || undefined,
+        rateLimitConfig: {
+          maxRequests: 60,
+          windowMs: 60000
+        },
+        circuitBreaker: circuitBreakerRef.current || undefined,
+        onRateLimit: (retryAfter) => {
+          addLog('system', `Rate limit exceeded. Please wait ${retryAfter} seconds.`, { retryAfter });
+          updateResilienceStatus();
+        },
+        onCircuitOpen: () => {
+          addLog('system', 'Circuit breaker opened - Gemini API temporarily unavailable', { severity: 'error' });
+          if (degradationManagerRef.current) {
+            degradationManagerRef.current.reportFailure('llm', 'Circuit breaker opened');
+          }
+          updateResilienceStatus();
+        }
     });
     geminiRef.current = client;
+    
+    // Update status after client creation
+    updateResilienceStatus();
 
     client.onAudioData = async (audioData) => {
         if (audioContextRef.current) {
@@ -1426,9 +1743,15 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
 
                 if (!targetNode) {
                     const errorMsg = `Tool "${toolName}" not found or disconnected`;
-                    addLog('system', `❌ ${errorMsg}`);
+                    const errorResponse = createErrorResponse(
+                        ErrorCode.TOOL_NOT_FOUND,
+                        errorMsg,
+                        { toolName }
+                    );
+                    addLog('system', `❌ ${errorResponse.userFriendlyMessage || errorMsg}`);
                     addLog('debug', 'Tool Resolution Failed', {
                         toolName,
+                        errorCode: errorResponse.code,
                         availableTools: nodesRef.current
                             .filter(n => n.type === NodeType.DEPARTMENT || n.type === NodeType.SUB_AGENT)
                             .map(n => ({ id: n.id, name: getToolName(n), type: n.type }))
@@ -1437,8 +1760,8 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                     responses.push({ 
                         id: tc.id, 
                         result: { 
-                            error: errorMsg,
-                            errorCode: 'TOOL_NOT_FOUND',
+                            error: errorResponse.userFriendlyMessage || errorResponse.message,
+                            errorCode: errorResponse.code,
                             message: 'The requested tool is not available. Please check your workflow configuration.'
                         } 
                     });
@@ -1689,7 +2012,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
     setActiveAgentId(agentNodeId);
     onSetActiveNodes([agentNodeId]);
     if (!isHandoff && agentData.speaksFirst && agentData.firstSentence) {
-        setTimeout(() => client.sendText(`[System: Immediately say: "${agentData.firstSentence}"]`), 500);
+        setTimeout(async () => {
+            try {
+                await client.sendText(`[System: Immediately say: "${agentData.firstSentence}"]`);
+            } catch (error) {
+                console.error('Failed to send initial greeting text:', error);
+                // Don't block the call if initial text fails
+            }
+        }, 500);
     }
   };
 
@@ -1810,6 +2140,17 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                 </h2>
                 <div className="flex items-center gap-2">
                     <button
+                        onClick={() => setShowSessionMemory(!showSessionMemory)}
+                        className={`p-2 rounded-lg transition-colors ${
+                            showSessionMemory 
+                                ? 'bg-purple-100 text-purple-600' 
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                        title="Toggle Session Memory"
+                    >
+                        <Brain size={16} />
+                    </button>
+                    <button
                         onClick={() => setShowObservability(!showObservability)}
                         className={`p-2 rounded-lg transition-colors ${
                             showObservability 
@@ -1878,27 +2219,116 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
         </div>
 
         {/* System Status Panel */}
-        <SystemStatusPanel
-            performanceMonitor={performanceMonitorRef.current || undefined}
-            healthChecker={healthCheckerRef.current || undefined}
-            analyticsManager={analyticsManagerRef.current || undefined}
-            autoRefresh={true}
-            refreshInterval={5000}
-        />
+        <Suspense fallback={<div className="flex items-center justify-center h-full text-slate-400 text-sm">Loading system status...</div>}>
+            <SystemStatusPanel
+                performanceMonitor={performanceMonitorRef.current || undefined}
+                healthChecker={healthCheckerRef.current || undefined}
+                analyticsManager={analyticsManagerRef.current || undefined}
+                autoRefresh={true}
+                refreshInterval={5000}
+            />
+        </Suspense>
+
+        {/* Resilience Status Panel (Phase 2) */}
+        {resilienceStatus && (
+          <div className="bg-white border-b border-slate-200">
+            <div className="px-4 py-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-amber-50 rounded-md">
+                  <ShieldAlert size={14} className="text-amber-600" />
+                </div>
+                <span className="text-xs font-bold text-slate-700">Resilience Status</span>
+              </div>
+              {resilienceStatus.degradation !== null && (
+                <div className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${
+                  resilienceStatus.degradation === DegradationLevel.FULL ? 'bg-green-50 text-green-600 border-green-200' :
+                  resilienceStatus.degradation === DegradationLevel.REDUCED ? 'bg-yellow-50 text-yellow-600 border-yellow-200' :
+                  resilienceStatus.degradation === DegradationLevel.MINIMAL ? 'bg-orange-50 text-orange-600 border-orange-200' :
+                  'bg-red-50 text-red-600 border-red-200'
+                }`}>
+                  {DegradationLevel[resilienceStatus.degradation]}
+                </div>
+              )}
+            </div>
+            <div className="px-4 pb-3 space-y-2 border-t border-slate-100 bg-slate-50/50">
+              {/* Circuit Breaker Status */}
+              {resilienceStatus.circuitBreaker && (
+                <div className="bg-white rounded-lg p-2 border border-slate-200">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-medium text-slate-600">Circuit Breaker</span>
+                    <div className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                      resilienceStatus.circuitBreaker.state === CircuitState.CLOSED ? 'bg-green-100 text-green-700' :
+                      resilienceStatus.circuitBreaker.state === CircuitState.OPEN ? 'bg-red-100 text-red-700' :
+                      'bg-yellow-100 text-yellow-700'
+                    }`}>
+                      {resilienceStatus.circuitBreaker.state.toUpperCase()}
+                    </div>
+                  </div>
+                  {resilienceStatus.circuitBreaker.stats && (
+                    <div className="text-[9px] text-slate-500">
+                      Total: {resilienceStatus.circuitBreaker.stats.totalRequests || 0} | 
+                      Success: {resilienceStatus.circuitBreaker.stats.totalSuccesses || 0} | 
+                      Failures: {resilienceStatus.circuitBreaker.stats.totalFailures || 0}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Rate Limit Status */}
+              {resilienceStatus.rateLimit && (
+                <div className="bg-white rounded-lg p-2 border border-slate-200">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-medium text-slate-600">Rate Limit</span>
+                    <div className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                      resilienceStatus.rateLimit.allowed ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                    }`}>
+                      {resilienceStatus.rateLimit.allowed ? 'OK' : 'LIMIT'}
+                    </div>
+                  </div>
+                  <div className="text-[9px] text-slate-500">
+                    Remaining: {resilienceStatus.rateLimit.remaining || 0}
+                    {resilienceStatus.rateLimit.retryAfter && (
+                      <span className="ml-2 text-orange-600">
+                        Retry in: {resilienceStatus.rateLimit.retryAfter}s
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Session Memory Panel */}
+        {showSessionMemory && (
+            <div className="border-b border-slate-200 h-96">
+                <Suspense fallback={<div className="flex items-center justify-center h-full text-slate-400 text-sm">Loading session memory...</div>}>
+                    <SessionMemoryPanel
+                        stateManager={stateManagerRef.current || undefined}
+                        sessionId={simulationMode === 'text' ? textSessionId : undefined}
+                        autoRefresh={true}
+                        refreshInterval={2000}
+                    />
+                </Suspense>
+            </div>
+        )}
 
         {/* Observability Panel */}
         {showObservability && (
             <div className="border-b border-slate-200 h-96">
-                <ObservabilityPanel
-                    performanceMonitor={performanceMonitorRef.current || undefined}
-                    healthChecker={healthCheckerRef.current || undefined}
-                    analyticsManager={analyticsManagerRef.current || undefined}
-                    tracer={tracerRef.current || undefined}
-                    reliabilityTracker={reliabilityTrackerRef.current || undefined}
-                    logger={loggerRef.current || undefined}
-                    autoRefresh={true}
-                    refreshInterval={5000}
-                />
+                <Suspense fallback={<div className="flex items-center justify-center h-full text-slate-400 text-sm">Loading observability...</div>}>
+                    <ObservabilityPanel
+                        performanceMonitor={performanceMonitorRef.current || undefined}
+                        healthChecker={healthCheckerRef.current || undefined}
+                        analyticsManager={analyticsManagerRef.current || undefined}
+                        tracer={tracerRef.current || undefined}
+                        reliabilityTracker={reliabilityTrackerRef.current || undefined}
+                        logger={loggerRef.current || undefined}
+                        dashboardProvider={dashboardProviderRef.current || undefined}
+                        autoRefresh={true}
+                        refreshInterval={5000}
+                    />
+                </Suspense>
             </div>
         )}
 
@@ -1920,10 +2350,14 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                                         log.text.includes('Error') || log.text.includes('Failed') ? 'bg-rose-50 text-rose-600 border-rose-100' : 
                                         log.text.includes('GOAL') ? 'bg-amber-50 text-amber-600 border-amber-100' : 
                                         log.text.includes('Consulting') ? 'bg-cyan-50 text-cyan-600 border-cyan-100' :
+                                        log.text.includes('Mock Data') || log.text.includes('mock data') ? 'bg-purple-50 text-purple-600 border-purple-100' :
+                                        log.text.includes('Tool Result') || log.text.includes('tool result') ? 'bg-yellow-50 text-yellow-600 border-yellow-100' :
                                         'bg-white text-slate-500 border-slate-200'
                                     }`}>
                                         {log.text.includes('GOAL') && <Target size={10} />}
                                         {log.text.includes('Consulting') && <Network size={10} />}
+                                        {(log.text.includes('Mock Data') || log.text.includes('mock data')) && <FileJson size={10} />}
+                                        {(log.text.includes('Tool Result') || log.text.includes('tool result')) && <Zap size={10} />}
                                         {log.text}
                                     </div>
                                 </div>
@@ -1946,13 +2380,19 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                                             </>
                                         )}
                                     </div>
-                                    <div className={`p-3 rounded-2xl shadow-sm text-xs leading-relaxed border ${
-                                        isUser 
-                                        ? 'bg-indigo-600 text-white rounded-tr-sm border-indigo-600' 
-                                        : 'bg-white text-slate-700 rounded-tl-sm border-slate-200'
-                                    }`}>
+                                    <div 
+                                        className={`p-3 rounded-2xl shadow-sm text-xs leading-relaxed border relative ${
+                                            isUser 
+                                            ? 'bg-indigo-600 text-white rounded-tr-sm border-indigo-600' 
+                                            : 'bg-white text-slate-700 rounded-tl-sm border-slate-200'
+                                        }`}
+                                        title={log.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
+                                    >
                                         {log.text}
                                     </div>
+                                    <span className="text-[9px] text-slate-400 mt-1 opacity-0 group-hover:opacity-100 transition-opacity px-1 font-mono">
+                                        {log.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
+                                    </span>
                                 </div>
                             </div>
                         );
@@ -1962,13 +2402,17 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                     <form
                         onSubmit={async (e) => {
                             e.preventDefault();
-                            if (!textInput.trim() || !testPanelAdapterRef.current) return;
+                            if (!textInput.trim() || !testPanelAdapterRef.current || isAgentTyping) return;
                             
                             const userMessage = textInput.trim();
                             setTextInput('');
                             addLog('user', userMessage);
+                            setIsAgentTyping(true);
                             
                             try {
+                                // Add natural thinking delay
+                                await addNaturalDelay();
+                                
                                 const response = await testPanelAdapterRef.current.processCallerInput(
                                     userMessage,
                                     textSessionId
@@ -1977,6 +2421,8 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                                 setMetrics(prev => ({ ...prev, totalInteractions: prev.totalInteractions + 1 }));
                             } catch (error: any) {
                                 addLog('system', `❌ Error: ${error.message}`);
+                            } finally {
+                                setIsAgentTyping(false);
                             }
                         }}
                         className="flex gap-2"
@@ -1990,12 +2436,23 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
                         />
                         <button
                             type="submit"
-                            disabled={!textInput.trim()}
+                            disabled={!textInput.trim() || isAgentTyping}
                             className="px-4 py-2 bg-indigo-600 text-white text-xs font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         >
                             Send
                         </button>
                     </form>
+                    {/* Typing Indicator */}
+                    {isAgentTyping && (
+                        <div className="mt-2 flex items-center gap-2 text-[10px] text-indigo-600 font-medium animate-fadeIn bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100">
+                            <div className="flex gap-1">
+                                <div className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                                <div className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                                <div className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                            </div>
+                            <span className="font-medium">Agent is thinking...</span>
+                        </div>
+                    )}
                 </div>
             </div>
         )}
@@ -2064,29 +2521,15 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
         )}
 
         {/* Stats Bar */}
-        <div className="bg-white border-b border-slate-100 py-2 px-4 flex items-center justify-between text-[10px] font-medium text-slate-500">
-             <div className="flex items-center gap-4">
-                <div className="flex items-center gap-1.5" title="Duration">
-                    <Clock size={12} className="text-indigo-500"/>
-                    <span className="font-mono text-slate-700">{formatDuration(sessionDuration)}</span>
-                </div>
-                 <div className="flex items-center gap-1.5" title="Resolution">
-                    <CheckCircle2 size={12} className={metrics.isSessionResolved ? "text-amber-500" : "text-slate-300"}/>
-                    <span className={metrics.isSessionResolved ? "text-amber-600 font-bold" : "text-slate-400"}>
-                        {metrics.successfulResolutions} Resolved
-                    </span>
-                </div>
-                <div className="flex items-center gap-1.5" title="Agents">
-                    <Network size={12} className="text-slate-400" />
-                    <span className="text-[10px] text-slate-500">
-                        {departmentCount} Depts / {toolCount} Tools
-                    </span>
-                </div>
-             </div>
-             <button onClick={() => {}} className="hover:text-indigo-600 transition-colors" title="Download Log">
-                 <Download size={14} />
-             </button>
-        </div>
+        <MetricsDisplay
+          sessionDuration={sessionDuration}
+          metrics={metrics}
+          departmentCount={departmentCount}
+          toolCount={toolCount}
+          onDownloadLog={() => {
+            // TODO: Implement log download functionality
+          }}
+        />
 
         {/* Chat Logs (Voice Mode Only) */}
         {simulationMode === 'voice' && (
@@ -2150,43 +2593,13 @@ const TestPanel: React.FC<TestPanelProps> = ({ nodes, edges, setEdges, onSetActi
 
         {/* Controls (Voice Mode Only) */}
         {simulationMode === 'voice' && (
-        <div className="p-4 bg-white border-t border-slate-100 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-30">
-            {!isCallActive ? (
-                <button 
-                    onClick={startCall}
-                    disabled={apiKeyError}
-                    className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 rounded-xl font-bold shadow-lg shadow-indigo-200 disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed transition-all active:scale-[0.98] group"
-                >
-                    <div className="p-1 bg-white/20 rounded-full group-hover:bg-white/30 transition-colors">
-                        <Phone size={16} className="fill-current" />
-                    </div>
-                    Start Simulation
-                </button>
-            ) : (
-                <div className="flex gap-3">
-                    <button 
-                        onClick={endCall}
-                        className="flex-1 flex items-center justify-center gap-2 bg-rose-500 hover:bg-rose-600 text-white py-3.5 rounded-xl font-bold shadow-lg shadow-rose-200 transition-all active:scale-[0.98]"
-                    >
-                        <Square size={16} fill="currentColor" />
-                        End Session
-                    </button>
-                    <button 
-                        className="px-5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl flex items-center justify-center transition-colors"
-                        aria-label="Microphone"
-                        title="Microphone"
-                    >
-                        <Mic size={20} />
-                    </button>
-                </div>
-            )}
-            <div className="flex justify-center mt-3">
-                <span className="text-[9px] font-medium text-slate-400 flex items-center gap-1 bg-slate-50 px-2 py-0.5 rounded border border-slate-100">
-                    <Zap size={8} className="text-amber-400 fill-current" />
-                    Powered by Gemini 2.5 Flash
-                </span>
-            </div>
-        </div>
+          <VoiceControls
+            isCallActive={isCallActive}
+            sessionDuration={sessionDuration}
+            apiKeyError={apiKeyError}
+            onStartCall={startCall}
+            onEndCall={endCall}
+          />
         )}
     </aside>
   );
